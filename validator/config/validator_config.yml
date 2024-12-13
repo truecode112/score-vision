@@ -1,0 +1,49 @@
+# Validator-specific configuration
+
+# Network settings
+network:
+  port: 8000
+  host: "0.0.0.0"
+  max_connections: 100
+
+# Database settings
+database:
+  url: "sqlite:///validator.db"
+  pool_size: 10
+  max_overflow: 20
+  timeout: 30
+
+# Challenge settings
+challenge:
+  max_concurrent: 10
+  timeout: 300  # seconds
+  retry_limit: 3
+  retry_delay: 5  # seconds
+  batch_size: 32
+
+# Scoring settings
+scoring:
+  min_score: 0.0
+  max_score: 1.0
+  threshold: 0.5
+  weights:
+    accuracy: 0.7
+    speed: 0.3
+
+# Security
+security:
+  encryption_enabled: true
+  key_rotation_interval: 86400  # 24 hours
+
+# Logging
+logging:
+  level: "INFO"
+  file: "validator.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
+
+# Storage
+storage:
+  challenge_dir: "challenges"
+  results_dir: "results"
+  max_storage: 10737418240  # 10GB

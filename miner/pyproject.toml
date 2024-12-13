@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "score"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "tmoklc", email = "tmoklc@gmail.com"}
+]
+dependencies = [
+    "supervision",
+    "numpy",
+    "opencv-python",
+    "transformers",
+    "umap-learn==0.5.7",
+    "scikit-learn",
+    "tqdm",
+    "sentencepiece",
+    "protobuf",
+    "llvmlite>=0.41.0",
+    "fastapi",
+    "supervision",
+    "streamlit",
+    "ultralytics",
+    "python-multipart",
+    "uvicorn",
+    "gdown>=5.2.0",
+    "python-dotenv>=1.0.1",
+    "fiber[full]",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Operating System :: Unix",
+    "Operating System :: MacOS"
+]
+
+[project.optional-dependencies]
+tests = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/tmoklc/miner"
+
+[tool.uv.sources]
+fiber = { git = "https://github.com/rayonlabs/fiber.git" }
