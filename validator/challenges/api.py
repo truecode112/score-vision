@@ -3,7 +3,7 @@ import httpx
 from datetime import datetime
 import json
 from fiber.logging_utils import get_logger
-from validator.config import CHALLENGE_API_URL
+from validator.config import SCORE_VISION_API
 
 logger = get_logger(__name__)
 
@@ -19,7 +19,7 @@ async def get_next_challenge(validator_address: str) -> Optional[Dict[str, Any]]
     """
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{CHALLENGE_API_URL}/api/tasks/next?validator_hotkey={validator_address}")
+            response = await client.get(f"{SCORE_VISION_API}/api/tasks/next?validator_hotkey={validator_address}")
             response.raise_for_status()
             
             data = response.json()
@@ -73,7 +73,7 @@ async def update_task_scores(
             "created_at": datetime.now().isoformat()
         }
         
-        url = f"{CHALLENGE_API_URL}/api/tasks/update"
+        url = f"{SCORE_VISION_API}/api/tasks/update"
         params = {"validator_hotkey": validator_address}
         
         logger.info(f"Sending score update to API:")

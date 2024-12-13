@@ -31,10 +31,7 @@ FRAMES_TO_VALIDATE = int(os.getenv("FRAMES_TO_VALIDATE", "2"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # API Configuration
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "")
-SCORE_PREDICT_API_URL = os.getenv("SCORE_PREDICT_API_URL", "https://app.scorepredict.io/")
-SCORE_MATCH_API = os.getenv("SCORE_MATCH_API", "https://api.scorepredict.io")
-CHALLENGE_API_URL = os.getenv("CHALLENGE_API_URL", "http://localhost:8000")
+SCORE_VISION_API = os.getenv("SCORE_VISION_API", "http://localhost:8000")
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
