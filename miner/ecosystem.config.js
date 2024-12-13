@@ -4,7 +4,7 @@ module.exports = {
       name: "sn44-miner",
       script: "-m",
       interpreter: ".venv/bin/python",
-      interpreter_args: "-m uvicorn main:app --host 0.0.0.0 --port 8000",
+      interpreter_args: "-m uvicorn main:app --host 0.0.0.0 --port 7999",
       cwd: "./",
       autorestart: true,
       watch: false,
