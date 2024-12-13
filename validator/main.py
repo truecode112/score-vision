@@ -247,7 +247,7 @@ async def main():
     DB_PATH = "validator.db"
     
     # Wipe and reinitialize database
-    wipe_database(DB_PATH)
+    # wipe_database(DB_PATH)
     
     # Initialize database manager and validator
     db_manager = DatabaseManager(DB_PATH)
