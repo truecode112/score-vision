@@ -10,6 +10,7 @@ from ..challenge.challenge_types import (
     GSRResponse,
     ValidationResult
 )
+from .schema import check_db_initialized, init_db
 
 from fiber.logging_utils import get_logger
 
@@ -18,8 +19,15 @@ logger = get_logger(__name__)
 class DatabaseManager:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        
+        # Initialize database if needed
+        if not check_db_initialized(str(db_path)):
+            logger.info(f"Initializing new database at {db_path}")
+            init_db(str(db_path))
+            
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        logger.info(f"Connected to database at {db_path}")
         
     def close(self):
         if self.conn:

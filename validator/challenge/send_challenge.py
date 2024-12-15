@@ -6,6 +6,7 @@ from fiber.logging_utils import get_logger
 from fiber.validator import client as validator
 from fiber import Keypair
 from validator.challenge.challenge_types import GSRChallenge, GSRResponse
+from validator.config import CHALLENGE_TIMEOUT
 
 logger = get_logger(__name__)
 
@@ -17,7 +18,7 @@ async def send_challenge(
     node_id: int,
     db_manager=None,
     client: httpx.AsyncClient = None,
-    timeout: float = 3600  # 1 hour timeout
+    timeout: float = CHALLENGE_TIMEOUT.total_seconds()  # Use config timeout in seconds
 ) -> httpx.Response:
     """Send a challenge to a miner node using fiber 2.0.0 protocol."""
     endpoint = "/soccer/challenge"

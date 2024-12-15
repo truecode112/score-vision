@@ -207,20 +207,6 @@ async def get_available_nodes(
     
     return available_nodes
 
-def wipe_database(db_path: str) -> None:
-    """Delete and reinitialize the database."""
-    try:
-        if os.path.exists(db_path):
-            logger.info(f"Wiping database at {db_path}")
-            os.remove(db_path)
-        
-        # Reinitialize empty database
-        init_db(db_path)
-        logger.info("Database reinitialized")
-    except Exception as e:
-        logger.error(f"Error wiping database: {str(e)}")
-        raise
-
 async def weights_update_loop(db_manager: DatabaseManager) -> None:
     """Run the weights update loop on WEIGHTS_INTERVAL."""
     logger.info("Starting weights update loop")
@@ -243,13 +229,8 @@ async def main():
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY environment variable not set")
     
-    # Initialize paths
-    DB_PATH = "validator.db"
-    
-    # Wipe and reinitialize database
-    # wipe_database(DB_PATH)
-    
     # Initialize database manager and validator
+    logger.info(f"Initializing database manager with path: {DB_PATH}")
     db_manager = DatabaseManager(DB_PATH)
     validator = GSRValidator(openai_api_key=OPENAI_API_KEY)
     
@@ -268,7 +249,7 @@ async def main():
     )
 
     # Initialize HTTP client with long timeout
-    async with httpx.AsyncClient(timeout=3600) as client:
+    async with httpx.AsyncClient(timeout=CHALLENGE_TIMEOUT.total_seconds()) as client:
         active_challenge_tasks = []  # Track active challenges
         
         # Start evaluation loop as a separate task
