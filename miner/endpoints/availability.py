@@ -1,24 +1,18 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fiber.logging_utils import get_logger
-from miner.core.models.config import Config
-from miner.dependencies import get_config
-from miner.endpoints.soccer import miner_lock
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from loguru import logger
 
-logger = get_logger(__name__)
+from miner.utils.shared import miner_lock
 
+class AvailabilityResponse(BaseModel):
+    available: bool
+
+# Create router instance
 router = APIRouter()
 
-@router.get("/availability")
-async def check_availability(
-    request: Request,
-    validator_ss58_address: str = Header(..., alias="validator-hotkey"),
-    config: Config = Depends(get_config)
-):
-    """Check if miner is available to process soccer challenges"""
-    try:
-        is_available = not miner_lock.locked()
-        logger.debug(f"Soccer miner availability check from validator {validator_ss58_address}: {is_available}")
-        return {"available": is_available}
-    except Exception as e:
-        logger.error(f"Error checking availability: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) 
+@router.get("/availability", response_model=AvailabilityResponse)
+async def check_availability():
+    """Check if the miner is available to process a challenge."""
+    is_available = not miner_lock.locked()
+    logger.info(f"Miner availability checked: {is_available}")
+    return AvailabilityResponse(available=is_available)
