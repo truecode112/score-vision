@@ -12,12 +12,12 @@ from cryptography.fernet import Fernet
 import asyncio
 from pathlib import Path
 
-# Get the absolute path to dev.env
-validator_dir = Path(__file__).parent.parent
-dev_env_path = validator_dir / "dev.env"
+# Get the absolute path to .env
+validator_dir = Path(__file__).parents[1]
+env_path = validator_dir / ".env"
 
-# Load only dev.env
-load_dotenv(dev_env_path)
+# Load only .env
+load_dotenv(env_path)
 
 logger = get_logger(__name__)
 

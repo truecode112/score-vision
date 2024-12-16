@@ -1,136 +1,118 @@
-# Score Subnet Validator
+# SN44 Validator
 
-The Score Subnet Validator is a Bittensor subnet validator for evaluating Game State Reconstruction (GSR) challenges in soccer videos. It manages the full lifecycle of challenges, from distribution to evaluation and reward calculation.
+This is the validator component for Subnet 44 (Soccer Video Analysis). For full subnet documentation, please see the [main README](../README.md).
 
-## Testnet
+## Quick Start
 
-Testnet netuid: 261
+1. Follow the installation steps in the main README first.
 
-## Requirements
-
-- Python >= 3.10
-- [uv](https://github.com/astral-sh/uv) for dependency management
-- [PM2](https://pm2.keymetrics.io/) for process management (optional)
-- OpenAI API key (for GPT-4V)
-- Substrate account keypair
-
-## Installation
-
-1. Clone the repository:
+2. Configure the validator:
 
 ```bash
-git clone <repository-url>
-cd sn44
+# Copy example environment file
+cp validator/.env.example validator/.env
+
+# Edit .env with your settings
+nano validator/.env
 ```
 
-2. Create and activate a virtual environment:
+Required configurations:
 
-```bash
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
+- `OPENAI_API_KEY`: Your GPT-4o capable API key
+- `WALLET_NAME`: Your validator wallet name
+- `HOTKEY_NAME`: Your validator hotkey name
 
-3. Install dependencies:
+## Operational Overview
 
-```bash
-uv pip install -e ".[validator]"
-```
+The validator runs several concurrent loops to manage the subnet:
+
+### 1. Challenge Management Loop (Every 5 minutes)
+
+- Fetches new soccer video challenges from the challenge API
+- Identifies active miners with sufficient stake (<100 TAO)
+- Checks miner availability via health endpoints
+- Distributes challenges to available miners
+- Tracks challenge distribution and timeouts
+
+### 2. Response Collection Loop
+
+- Monitors for incoming challenge responses
+- Validates response format and completeness
+- Stores responses in the database for evaluation
+- Handles timeouts and failed responses
+- Manages concurrent response processing
+
+### 3. Evaluation Loop (Continuous)
+
+Note – this is in ongoing development and likely to change significantly.
+
+- Processes stored responses in batches
+- Uses random frames from the challenges
+- Uses GPT-4o to validate frame annotations:
+  - Player detection accuracy
+  - Goalkeeper identification
+  - Referee detection
+  - Ball tracking
+- Calculates frame-level scores
+- Stores evaluation results
+
+### 4. Weight Setting Loop (Every 21 minutes)
+
+Note – this is in ongoing development and likely to change significantly.
+
+- Aggregates recent evaluation scores
+- Calculates miner performance metrics:
+  - Evaluation accuracy (60%)
+  - Availability (30%)
+  - Response speed (10%)
+- Updates miner weights on-chain
+- Manages reward distribution
 
 ## Running the Validator
 
-### Option 1: Direct Python Execution
+### Using PM2 (Recommended)
 
 ```bash
 cd validator
-python main.py
+pm2 start \
+  --name "sn44-validator" \
+  --interpreter "../.venv/bin/python" \
+  "../.venv/bin/uvicorn" \
+  -- main:app --port 8000
 ```
 
-### Option 2: Using PM2 (Recommended for Production)
-
-1. Install PM2 if you haven't already:
+Common PM2 commands:
 
 ```bash
-npm install -g pm2
-```
-
-2. Start the validator:
-
-```bash
-cd validator
-pm2 start ecosystem.config.js
-```
-
-PM2 Commands:
-
-```bash
-pm2 list                    # List all processes
 pm2 logs sn44-validator    # View logs
-pm2 stop sn44-validator    # Stop the validator
-pm2 restart sn44-validator # Restart the validator
-pm2 delete sn44-validator  # Remove from PM2
+pm2 stop sn44-validator    # Stop validator
+pm2 restart sn44-validator # Restart validator
 ```
 
-## Configuration
-
-1. Set up environment variables in `dev.env`:
+### Manual Run
 
 ```bash
-OPENAI_API_KEY=your_api_key_here
-SUBSTRATE_URL=your_substrate_url
-VALIDATOR_SEED=your_validator_seed
-DB_CONNECTION=your_db_connection_string
+cd validator
+uvicorn main:app --reload --port 8000
 ```
 
-2. Configure system parameters in config.py:
+## Configuration Reference
 
-- `CHALLENGE_INTERVAL`: Time between challenge distributions
-- `WEIGHTS_INTERVAL`: Time between weight updates
-- Database settings
-- Network parameters
-
-## System Architecture
-
-The validator operates through several coordinated components:
-
-### 1. Challenge Management
-
-- Generates and distributes GSR challenges to miner nodes
-- Manages challenge scheduling and distribution (every 2 hours)
-- Tracks challenge assignments and completions in database
-- Encrypts challenge data for secure transmission
-
-### 2. Response Collection
-
-- Continuously monitors for challenge responses from miners
-- Collects and validates response data
-- Stores responses in database for evaluation
-- Handles timeouts and failed responses
-
-### 3. Evaluation System
-
-- Evaluates GSR challenge responses using Vision Language Models (VLM)
-- Performs batch frame analysis for efficiency
-- Validates object detection quality:
-  - Players (field players)
-  - Goalkeepers
-  - Referees
-  - Soccer ball
-- Provides detailed scoring and feedback
-
-### 4. Weight Management
-
-- Calculates and updates miner weights based on performance
-- Periodically updates weights on-chain
-- Implements scoring algorithms for fair reward distribution
-
-## Development
-
-To run tests:
+Key environment variables in `.env`:
 
 ```bash
-pytest
+# Network
+NETUID=261                                    # Subnet ID (261 for testnet)
+SUBTENSOR_NETWORK=test                        # Network type (test/local)
+SUBTENSOR_ADDRESS=wss://test.finney.opentensor.ai:443  # Network address
+
+# Validator
+VALIDATOR_PORT=8000                           # API port
+VALIDATOR_HOST=0.0.0.0                        # API host
+MIN_STAKE_THRESHOLD=2                         # Minimum stake requirement
+
+# API Keys
+OPENAI_API_KEY=your_key_here                  # GPT-4o capable key
 ```
 
-## License
-
-MIT
+For advanced configuration options and architecture details, see the [main README](../README.md).

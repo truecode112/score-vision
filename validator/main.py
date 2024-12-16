@@ -45,8 +45,8 @@ from validator.challenges.api import get_next_challenge
 
 # Load environment variables
 validator_dir = Path(__file__).parent
-dev_env_path = validator_dir / "dev.env"
-load_dotenv(dev_env_path)
+env_path = validator_dir / ".env"
+load_dotenv(env_path)
 
 class ChallengeTask:
     def __init__(self, node_id: int, task: asyncio.Task, timestamp: datetime, challenge: GSRChallenge, miner_hotkey: str):
