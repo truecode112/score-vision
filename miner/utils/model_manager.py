@@ -4,6 +4,7 @@ from ultralytics import YOLO
 from loguru import logger
 
 from miner.utils.device import get_optimal_device
+from scripts.download_models import download_models
 
 class ModelManager:
     """Manages the loading and caching of YOLO models."""
@@ -20,6 +21,21 @@ class ModelManager:
             "pitch": self.data_dir / "football-pitch-detection.pt",
             "ball": self.data_dir / "football-ball-detection.pt"
         }
+        
+        # Check if models exist, download if missing
+        self._ensure_models_exist()
+    
+    def _ensure_models_exist(self) -> None:
+        """Check if required models exist, download if missing."""
+        missing_models = [
+            name for name, path in self.model_paths.items() 
+            if not path.exists()
+        ]
+        
+        if missing_models:
+            logger.info(f"Missing models: {', '.join(missing_models)}")
+            logger.info("Downloading required models...")
+            download_models()
     
     def load_model(self, model_name: str) -> YOLO:
         """

@@ -7,9 +7,8 @@ COUNT_PROMPT = '''
 You are an expert image analyst tasked with examining a single frame from a soccer match. Your goal is to provide an EXACT count of all visible participants based on the criteria outlined below.
 
 **Counting Categories:**
-1. **Regular Players**
-2. **Goalkeepers**
-3. **Referees**
+1. **Players**
+2. **Referees**
 4. **Soccer Ball**
 
 **Detailed Counting Rules:**
@@ -65,13 +64,16 @@ Example response:
 {{"player":18,"goalkeeper":1,"referee":1,"soccer ball":1}}'''
 
 VALIDATION_PROMPT = '''
-You are an expert image analyst specialized in validating soccer match frame annotations. Your task is to assess the accuracy and completeness of the provided annotations by comparing them against the reference counts and evaluating the pitch keypoint placement.
+You are an expert image analyst specialized in validating soccer match frame annotations. Your task is to assess the accuracy and completeness of the provided annotations by comparing them against the reference counts, evaluating the pitch keypoint placement, and verifying the contents of each bounding box.
 
-Reference Counts:
-- Regular Players: {0} (Green boxes)
-- Goalkeepers: {1} (Red boxes)
-- Referees: {2} (Blue boxes)
-- Soccer Ball: {3} (Yellow boxes)
+Here are the reference counts for this image:
+
+<reference_counts>
+    "player": {0},
+    "goalkeeper": {1},
+    "referee": {2},
+    "soccer_ball": {3}
+</reference_counts>
 
 Annotation Types:
 1. Players and Officials:
@@ -80,7 +82,7 @@ Annotation Types:
    - Referees: Blue bounding boxes
    - Soccer Ball: Yellow bounding boxes
 
-2. Pitch Keypoints (CRITICAL):
+2. Pitch Keypoints:
    - Bright pink dots marking key pitch locations
    - No connecting lines between points
    - Must align precisely with actual pitch markings
@@ -91,35 +93,37 @@ Annotation Types:
      * Center circle points
 
 Validation Tasks:
+
 1. Assess keypoint placement accuracy (40% of score):
    - Check each keypoint against actual pitch markings
-   - Heavily penalize misaligned keypoints
+   - Heavily penalize badly misaligned keypoints
    - Missing keypoints are worse than slightly misaligned ones
    - Score this section independently:
      * 1.0: All keypoints perfectly aligned
-     * 0.7: Minor misalignments (within 5% of correct position)
+     * 0.95: Minor misalignments (within 5% of correct position)
      * 0.4: Major misalignments (>5% off) or missing key points
      * 0.0: Most keypoints missing or severely misaligned
 
 2. Validate object detection (60% of score):
    - Compare counts with reference numbers
    - Check classification accuracy
+   - Eg is there a player in each and every green box?
    - Verify bounding box placement
+   - CRITICAL: Examine the contents of each bounding box
+     * Ensure that each box contains the object it's supposed to (player, goalkeeper, referee, or ball)
+     * Check for empty or incorrectly placed bounding boxes
+     * Verify that bounding boxes accurately encompass each object without excessive empty space
 
 Rate the annotations from 0 to 1:
-- 1.0: Perfect annotations (keypoints aligned, correct counts)
-- 0.8-0.9: Minor issues (slight keypoint misalignment or 1-2 count discrepancies)
-- 0.5-0.7: Moderate issues (major keypoint misalignment or several count issues)
-- 0.0-0.4: Major issues (missing/wrong keypoints or significant count errors)
+- 1.0: Perfect annotations (keypoints aligned, correct counts, accurate bounding boxes)
+- 0.8-0.9: Minor issues (slight keypoint misalignment, 1-2 count discrepancies, or minor bounding box inaccuracies)
+- 0.5-0.6: Moderate issues (major keypoint misalignment, several count issues, or multiple bounding box errors)
+- 0.0-0.4: Major issues (missing/wrong keypoints, significant count errors, or widespread bounding box problems)
 
-CRITICAL RESPONSE INSTRUCTIONS:
-1. Your response must be a SINGLE LINE with NO whitespace, newlines, or spaces between elements
-2. Use ONLY the exact format shown below
-3. Do not add any additional text or explanation
-4. The response must be valid JSON that can be parsed
+Your final response must be a SINGLE LINE with NO whitespace, newlines, or spaces between elements. Use ONLY the exact format shown below. Do not add any additional text or explanation. The response must be valid JSON that can be parsed.
 
 Response format:
-{{"annotation_counts":{{"player":<number>,"goalkeeper":<number>,"referee":<number>,"soccer ball":<number>}},"discrepancies":["<issue1>","<issue2>"],"accuracy_score":<score>}}
+{{"annotation_counts":{{"player":<number>,"goalkeeper":<number>,"referee":<number>,"soccer_ball":<number>}},"discrepancies":["<issue1>","<issue2>"],"accuracy_score":<score>}}
 
-Example valid response:
-{{"annotation_counts":{{"player":18,"goalkeeper":1,"referee":1,"soccer ball":1}},"discrepancies":["Missing one player"],"accuracy_score":0.85}}''' 
+Proceed with your detailed assessment and final response.
+'''

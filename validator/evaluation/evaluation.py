@@ -21,6 +21,14 @@ from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
 
 logger = get_logger(__name__)
 
+def optimize_coordinates(coords: List[float]) -> List[float]:
+    """Round coordinates to 2 decimal places to reduce data size."""
+    return [round(float(x), 2) for x in coords]
+
+def filter_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
+    """Filter out keypoints with zero coordinates and round remaining to 2 decimal places."""
+    return [optimize_coordinates(kp) for kp in keypoints if not (kp[0] == 0 and kp[1] == 0)]
+
 class GSRValidator:
     def __init__(self, openai_api_key: str, validator_hotkey: str = None):
         """Initialize validator with OpenAI API key for frame validation"""
@@ -86,7 +94,8 @@ class GSRValidator:
                     for player in frame_data["players"]:
                         try:
                             if "bbox" in player and "class_id" in player:
-                                x1, y1, x2, y2 = player["bbox"]
+                                bbox = optimize_coordinates(player["bbox"])
+                                x1, y1, x2, y2 = bbox
                                 class_id = player["class_id"]
                                 # Map class_id to type
                                 if class_id == 1:  # GOALKEEPER_CLASS_ID
@@ -109,7 +118,8 @@ class GSRValidator:
                     for ball in frame_data["ball"]:
                         try:
                             if "bbox" in ball:
-                                x1, y1, x2, y2 = ball["bbox"]
+                                bbox = optimize_coordinates(ball["bbox"])
+                                x1, y1, x2, y2 = bbox
                                 cv2.rectangle(annotated_frame, 
                                             (int(x1), int(y1)), 
                                             (int(x2), int(y2)), 
@@ -248,8 +258,27 @@ class GSRValidator:
                     logger.error(f"Failed to get reference counts for frame {frame_num}, skipping")
                     continue
                 
+                # Optimize frame data before evaluation
+                frame_data_copy = frame_data.get(str(frame_num), {}).copy()
+                
+                # Optimize keypoints
+                if "keypoints" in frame_data_copy:
+                    frame_data_copy["keypoints"] = filter_keypoints(frame_data_copy["keypoints"])
+                
+                # Optimize player bounding boxes
+                if "players" in frame_data_copy:
+                    for player in frame_data_copy["players"]:
+                        if "bbox" in player:
+                            player["bbox"] = optimize_coordinates(player["bbox"])
+                
+                # Optimize ball bounding boxes
+                if "ball" in frame_data_copy:
+                    for ball in frame_data_copy["ball"]:
+                        if "bbox" in ball:
+                            ball["bbox"] = optimize_coordinates(ball["bbox"])
+                
                 # Second pass: Evaluate annotations using reference counts
-                evaluation = self.evaluate_frame(frame, frame_data.get(str(frame_num), {}), reference_counts)
+                evaluation = self.evaluate_frame(frame, frame_data_copy, reference_counts)
                 if evaluation is None:
                     logger.error(f"Failed to evaluate frame {frame_num}, skipping")
                     continue

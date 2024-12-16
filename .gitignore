@@ -202,7 +202,7 @@ prd.md
 # API Keys and Sensitive Data
 .env
 *.env
-.env.*
+.env
 .env.local
 .env.*.local
 .secrets
