@@ -43,7 +43,7 @@ WEIGHT_SPEED = float(os.getenv("WEIGHT_SPEED", "0.1"))
 
 # Additional settings needed for operation
 CHALLENGE_INTERVAL = timedelta(minutes=int(os.getenv("CHALLENGE_INTERVAL_MINUTES", "5")))
-CHALLENGE_TIMEOUT = timedelta(minutes=int(os.getenv("CHALLENGE_TIMEOUT_MINUTES", "180")))
+CHALLENGE_TIMEOUT = timedelta(minutes=int(os.getenv("CHALLENGE_TIMEOUT_MINUTES", "360")))
 DB_PATH = Path(os.getenv("DB_PATH", "validator.db"))
 WEIGHTS_INTERVAL = timedelta(minutes=int(os.getenv("WEIGHTS_INTERVAL_MINUTES", "21")))
 VALIDATION_DELAY = timedelta(minutes=int(os.getenv("VALIDATION_DELAY_MINUTES", "10")))
