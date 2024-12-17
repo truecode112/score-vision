@@ -26,7 +26,7 @@ MIN_MINERS = 1
 MAX_MINERS = 100
 SCORE_THRESHOLD = 0.7
 FRAMES_TO_VALIDATE = 2
-SCORE_VISION_API = "https://api.scorevision.ai"
+SCORE_VISION_API = "https://api.scorevision.io"
 
 # Weights configuration
 WEIGHT_EVALUATION = 0.6
