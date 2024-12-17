@@ -1,153 +1,151 @@
-# Subnet 44 - Soccer Video Analysis
+# Score Vision (SN44)
 
-This repository contains both the miner and validator components for Subnet 44, focusing on soccer video analysis.
+Score Vision is a decentralized computer vision framework built on Bittensor, focusing on Game State Recognition (GSR) in football matches. Our framework enables complex computer vision tasks through lightweight validation, addressing the significant untapped potential in football video analysis.
 
-## Requirements
+## Overview
 
-- Python >= 3.10
-- [uv](https://github.com/astral-sh/uv) for dependency management
+Traditional video annotation costs range from $10-55 per minute, with complex sports scenarios requiring up to 4 hours of human labeling time per minute. A single football match (90+ minutes) requires approximately 360 hours of manual annotation work, costing $1,000-5,000 for comprehensive labeling.
 
-## Installation
+Score Vision addresses these challenges through:
 
-### 0. Preliminary Setup
+- Decentralized computation for video processing
+- Lightweight validation using Vision Language Models (VLMs) and Human-in-the-loop
+- Carefully designed incentive mechanisms
+- Alignment with the SoccerNet-GSR framework
 
-1. Bootstrap
+## Architecture
 
-Get code and run bootstrap.sh script
+The system operates with three primary roles:
 
-```bash
-# Clone repository
-git clone https://github.com/score-protocol/sn44.git
-cd sn44
-chmod +x bootstrap.sh
-./bootstrap.sh
-```
+1. **Miners**: Process video streams using computer vision models
 
-This will download the subnet code and install the core prerequestits
+   - Handle object detection and tracking
+   - Generate standardized outputs
+   - Implement custom optimization strategies
 
-3. Copy relevant hotkey and public coldkey from local to remote:
-   Or import the whole wallets on remote. Whichvever you prefer.
+2. **Validators**: Verify miners' outputs efficiently
 
-```bash
-# Create hotkey directory
-mkdir -p /root/.bittensor/wallets/[walletname]/hotkeys/
+   - Use selective frame analysis
+   - Employ VLMs for accuracy assessmentx
+   - Maintain network integrity
 
-# Copy hotkey from local to remote
-scp ~/.bittensor/wallets/[walletname]/hotkeys/[hotkeyname] [user]@[SERVERIP]:/root/.bittensor/wallets/[walletname]/hotkeys/[hotkeyname]
+3. **Subnet Owners**: Manage network parameters
+   - Oversee incentive mechanisms
+   - Adjust system parameters
+   - Ensure network adaptability
 
-# Copy coldkey public key from lcoal to remote
-scp ~/.bittensor/wallets/[walletname]/coldkeypub.txt [user]@[SERVERIP]:/root/.bittensor/wallets/[walletname]/coldkeypub.txt
+## Setup Instructions
 
+- [Miner Setup Guide](miner/README.md)
+- [Validator Setup Guide](validator/README.md)
 
-```
+## Technical Implementation
 
-# On macOS and Linux.
+### Validation Mechanism
 
-### 1. Setup
+> **Note:** Our validation mechanism is being constantly improved and tweaked during testnet phase especially.
 
-```bash
-# Create and activate virtual environment
-uv venv --python=3.10
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
+Our framework uses a novel two-phase validation approach:
 
-### 2. Install Components
+1. **Object Count Verification**
 
-For Miner:
+   - Numerical analysis of scene composition
+   - Structured JSON output with precise counts
+   - Baseline establishment for quality evaluation
 
-```bash
-# Install miner dependencies
-uv pip install -e ".[miner]"
+2. **Bounding Box Quality Assessment**
+   - Completeness verification
+   - Spatial accuracy examination
+   - Normalized quality scoring (0-1)
 
-# Create env – be sure to edit this as per your configuration
-cp miner/.env.example miner/.env
-```
+### Frame Sampling
 
-For Validator:
+- Random frame selection
+- Unpredictable validation patterns
+- Efficient computational resource usage
 
-```bash
-uv pip install -e ".[validator]"
-cp validator/.env.example validator/dev.env
-```
+### Performance Metrics
 
-## Registering IP to chain
+(Coming soon)
 
-This is an important step for Miners to complete – it manually sets the IP and port for their node on chain, and this is what the Validators will use to send the challenges to.
-
-1. Find your IP on remote server
-
-```bash
-curl ifconfig.me
-```
-
-This requires coldkey to be local – so run it where you deem fit.
-
-For running locally, first install Fiber.
-
-```bash
-pip install "git+https://github.com/rayonlabs/fiber.git@2.0.1#egg=fiber[full]"
-```
-
-Then run the fiber-post-ip script, naming your miners IP, port, wallet name and hotkey.
-
-```bash
-fiber-post-ip --netuid 261 --subtensor.network test --external_port 7999 --wallet.name default --wallet.hotkey default --external_ip [YOUR-IP]
-```
-
-fiber-post-ip --netuid 261 --subtensor.network test --external_port 7999 --wallet.name 1valid --wallet.hotkey miner1 --external_ip 178.62.9.109
-
-## Running the Services
-
-### Miner
-
-#### Testing the pipeline
-
-You can use this to test inference
-
-```bash
-cd miner
-python scripts/test_pipeline.py
-```
-
-#### pm2 (preferered)
-
-```bash
-cd miner
-pm2 start \
-  --name "sn44-miner" \
-  --interpreter "../.venv/bin/python" \
-  "../.venv/bin/uvicorn" \
-  -- main:app --host 0.0.0.0 --port 7999
-```
-
-#### Manually
-
-```bash
-cd miner
-uvicorn main:app --reload --host 0.0.0.0 --port 7999
-```
-
-### Validator
-
-#### pm2 (preferred)
-
-```bash
-cd validator
-pm2 start \
-  --name "sn44-validator" \
-  --interpreter "../.venv/bin/python" \
-  "../.venv/bin/uvicorn" \
-  -- main:app --port 8000
+The Game State Higher Order Tracking Accuracy (GS-HOTA) metric:
 
 ```
-
-#### Manually
-
-```bash
-cd validator
-uvicorn validator.main:app --reload --port 8000
+GS-HOTA = √(Detection × Association)
 ```
+
+Where:
+
+- Detection: Measures object detection accuracy
+- Association: Assesses tracking consistency
+
+## Roadmap
+
+### Phase 1 (Current)
+
+- [x] Game State Recognition challange implementation
+- [x] VLM-based validation
+- [x] Incentive mechanism
+- [x] Testnet deploy on netuid 261
+- [ ] Community testing
+- [ ] Comprehensive benchmarking
+
+### Phase 2 (Q1 2025)
+
+- [ ] Human-in-the-loop validation
+- [ ] Additional footage type (grassroots)
+- [ ] Dashboard and Leaderboard
+
+### Phase 3 (Q2-Q3 2025)
+
+- [ ] Action spotting integration
+- [ ] Match event captioning
+- [ ] Advanced player tracking
+
+### Phase 4 (Q4 2025)
+
+- [ ] Integration APIs
+- [ ] Additional sports adaptation
+- [ ] Developer tools and SDKs
+- [ ] Community contribution framework
+
+## Future Developments
+
+### Action Spotting and Captioning
+
+- Event detection (goals, fouls, etc.)
+- Automated highlight generation
+- Natural language descriptions
+
+### Cross-Domain Applications
+
+- Basketball and tennis analysis
+- Security surveillance
+- Retail analytics
+
+### Technical Enhancements
+
+- Advanced VLM capabilities
+- Improved attribute assessment
+- Adaptive learning mechanisms
+- Open-source VLM development
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on:
+
+- Code style and standards
+- Pull request process
+- Development workflow
+- Testing requirements
+
+## Research
+
+This implementation is based on our research paper:
+"Score Vision: Enabling Complex Computer Vision Through Lightweight Validation - A Game State Recognition Framework for Live Football"
+
+For technical details and methodology, please refer to the [whitepaper](https://drive.google.com/file/d/1oADURxxIZK0mTEqJPDudgXypohtFNkON/view).
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

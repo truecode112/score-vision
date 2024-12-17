@@ -1,32 +1,112 @@
-# SN44 Miner
+# Score Vision (SN44) - Miner
 
 This is the miner component for Subnet 44 (Soccer Video Analysis). For full subnet documentation, please see the [main README](../README.md).
 
-## Quick Start
+## System Requirements
 
-1. Follow the installation steps in the main README first.
+Please see [REQUIREMENTS.md](REQUIREMENTS.md) for detailed system requirements.
 
-2. Configure the miner:
+## Setup Instructions
+
+1. **Bootstrap System Dependencies**
 
 ```bash
-# Copy example environment file
-cp miner/.env.example miner/.env
-
-# Edit .env with your settings
-nano miner/.env
+# Clone repository
+git clone https://github.com/score-protocol/sn44.git
+cd sn44
+chmod +x bootstrap.sh
+./bootstrap.sh
 ```
 
-Required configurations:
+2. Setup Bittensor Wallet:
 
-- `WALLET_NAME`: Your miner wallet name
-- `HOTKEY_NAME`: Your miner hotkey name
-- `DEVICE`: Computing device ('cuda', 'cpu', or 'mps')
+```bash
+# Create hotkey directory
+mkdir -p ~/.bittensor/wallets/[walletname]/hotkeys/
 
-3. Download required models:
+# If copying from local machine:
+scp ~/.bittensor/wallets/[walletname]/hotkeys/[hotkeyname] [user]@[SERVERIP]:~/.bittensor/wallets/[walletname]/hotkeys/[hotkeyname]
+scp ~/.bittensor/wallets/[walletname]/coldkeypub.txt [user]@[SERVERIP]:~/.bittensor/wallets/[walletname]/coldkeypub.txt
+```
+
+## Installation
+
+1. Create and activate virtual environment:
+
+```bash
+uv venv
+source .venv/bin/activate  # On Unix-like systems
+# or
+.venv\Scripts\activate  # On Windows
+```
+
+2. Install dependencies:
+
+```bash
+uv pip install -e ".[miner]"
+```
+
+3. Setup environment:
+
+```bash
+cp miner/.env.example miner/.env
+# Edit .env with your configuration
+```
+
+## Register IP on Chain
+
+1. Get your server IP:
+
+```bash
+curl ifconfig.me
+```
+
+2. Install Fiber (if doing locally):
+
+```bash
+uv pip install "git+https://github.com/rayonlabs/fiber.git@2.0.1#egg=fiber[full]"
+```
+
+3. Register your IP:
+
+```bash
+fiber-post-ip --netuid 261 --subtensor.network test --external_port 7999 --wallet.name [WALLET_NAME] --wallet.hotkey [HOTKEY_NAME] --external_ip [YOUR-IP]
+```
+
+## Running the Miner
+
+### Test the Pipeline
 
 ```bash
 cd miner
-python scripts/download_models.py
+python scripts/test_pipeline.py
+```
+
+### Production Deployment (PM2)
+
+```bash
+cd miner
+pm2 start \
+  --name "sn44-miner" \
+  --interpreter "../.venv/bin/python" \
+  "../.venv/bin/uvicorn" \
+  -- main:app --host 0.0.0.0 --port 7999
+```
+
+### Development Mode
+
+```bash
+cd miner
+uvicorn main:app --reload --host 0.0.0.0 --port 7999
+```
+
+### Testing the Pipeline
+
+To test the inference pipeline locally:
+
+```bash
+cd miner
+python scripts/test_pipeline.py
 ```
 
 ## Operational Overview
@@ -68,43 +148,6 @@ The miner operates several key processes to handle soccer video analysis:
 - Tracks processing metrics and timings
 - Manages concurrent request limits
 
-## Running the Miner
-
-### Using PM2 (Recommended)
-
-```bash
-cd miner
-pm2 start \
-  --name "sn44-miner" \
-  --interpreter "../.venv/bin/python" \
-  "../.venv/bin/uvicorn" \
-  -- main:app --host 0.0.0.0 --port 7999
-```
-
-Common PM2 commands:
-
-```bash
-pm2 logs sn44-miner     # View logs
-pm2 stop sn44-miner     # Stop miner
-pm2 restart sn44-miner  # Restart miner
-```
-
-### Manual Run
-
-```bash
-cd miner
-uvicorn main:app --reload --host 0.0.0.0 --port 7999
-```
-
-### Testing the Pipeline
-
-To test the inference pipeline locally:
-
-```bash
-cd miner
-python scripts/test_pipeline.py
-```
-
 ## Configuration Reference
 
 Key environment variables in `.env`:
@@ -130,19 +173,29 @@ DEVICE=cuda                                   # Computing device (cuda/cpu/mps)
 
 1. **Video Download Failures**
 
-   - System implements automatic retries (3 attempts)
-   - Uses exponential backoff between attempts
-   - Check network connectivity if persistent
+   - Check network connectivity
+   - Verify URL accessibility
+   - Monitor disk space
+   - Check download timeouts
 
-2. **Out of Memory**
+2. **Model Loading Issues**
 
-   - Reduce batch size in configuration
+   - Verify model files in `data/` directory
+   - Check CUDA/GPU availability
    - Monitor GPU memory usage
-   - Consider using CPU if GPU memory limited
+   - Verify model compatibility
 
-3. **Model Loading Errors**
-   - Verify models in `miner/data` directory
-   - Run download script again if missing
-   - Check device compatibility
+3. **Performance Issues**
+
+   - Adjust batch size settings
+   - Monitor system resources
+   - Check for memory leaks
+   - Optimize frame processing
+
+4. **Network Connectivity**
+   - Ensure port 7999 is exposed
+   - Check firewall settings
+   - Verify validator connectivity
+   - Monitor network latency
 
 For advanced configuration options and architecture details, see the [main README](../README.md).

@@ -19,6 +19,11 @@ run_cmd() {
 # Update package list
 run_cmd apt-get update
 
+# Set timezone to UTC
+run_cmd ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+run_cmd apt-get install -y tzdata
+run_cmd dpkg-reconfigure -f noninteractive tzdata
+
 # Install Python 3.10 and related tools
 run_cmd apt-get install -y \
     python3.10 \
@@ -39,10 +44,11 @@ run_cmd apt-get install -y \
     libxml2-dev \
     libxmlsec1-dev \
     libffi-dev \
-    liblzma-dev
+    liblzma-dev \
+    nano
 
 # Install nvm
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 
 # Load nvm
 export NVM_DIR="$HOME/.nvm"
@@ -75,10 +81,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Add uv to PATH permanently (for both root and non-root users)
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> $HOME/.bashrc
+source $HOME/.local/bin/env
 
 # Source the updated PATH
 source $HOME/.bashrc
 
+echo "----------------------------------------"
 echo "Prerequisites installation complete!"
 echo "PM2 is now installed. You can manage processes using 'pm2' command."
 echo "You can now proceed with the installation steps from README.md"
+echo "----------------------------------------"
