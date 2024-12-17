@@ -19,7 +19,7 @@ Get code and run bootstrap.sh script
 # Clone repository
 git clone https://github.com/score-protocol/sn44.git
 cd sn44
-sudo chmod +x bootstrap.sh
+chmod +x bootstrap.sh
 ./bootstrap.sh
 ```
 
@@ -58,6 +58,8 @@ For Miner:
 ```bash
 # Install miner dependencies
 uv pip install -e ".[miner]"
+
+# Create env – be sure to edit this as per your configuration
 cp miner/.env.example miner/.env
 ```
 

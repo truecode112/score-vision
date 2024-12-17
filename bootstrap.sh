@@ -5,11 +5,22 @@ set -e  # Exit on any error
 
 echo "Installing system prerequisites for sn44..."
 
+# Function to run command with or without sudo based on user permissions
+run_cmd() {
+    if [ "$(id -u)" -eq 0 ]; then
+        # If root, run without sudo
+        $@
+    else
+        # If not root, run with sudo
+        sudo $@
+    fi
+}
+
 # Update package list
-sudo apt-get update
+run_cmd apt-get update
 
 # Install Python 3.10 and related tools
-sudo apt-get install -y \
+run_cmd apt-get install -y \
     python3.10 \
     python3.10-venv \
     python3.10-dev \
@@ -30,18 +41,31 @@ sudo apt-get install -y \
     libffi-dev \
     liblzma-dev
 
-# Install Node.js and npm
-echo "Installing Node.js and npm..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
+# Install nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 
-# Verify Node.js installation
-node --version
-npm --version
+# Load nvm
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-# Install PM2 globally
-echo "Installing PM2..."
-sudo npm install -g pm2
+# Install latest LTS version of Node.js
+nvm install --lts
+
+# Install PM2
+npm install -g pm2
+
+# Verify installations
+echo "Checking installed versions:"
+node -v     # Node.js version
+npm -v      # npm version
+pm2 -v      # PM2 version
+
+# Setup PM2 startup (without sudo if we're root)
+if [ "$(id -u)" -eq 0 ]; then
+    env PATH=$PATH:/root/.nvm/versions/node/$(node -v)/bin pm2 startup
+else
+    sudo env PATH=$PATH:/home/$USER/.nvm/versions/node/$(node -v)/bin pm2 startup
+fi
 
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -49,12 +73,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Add uv to PATH for current session
 export PATH="$HOME/.local/bin:$PATH"
 
-# Add uv to PATH permanently
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# Add uv to PATH permanently (for both root and non-root users)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> $HOME/.bashrc
 
 # Source the updated PATH
-source ~/.bashrc
+source $HOME/.bashrc
 
 echo "Prerequisites installation complete!"
 echo "PM2 is now installed. You can manage processes using 'pm2' command."
-echo "You can now proceed with the installation steps from README.md:"
+echo "You can now proceed with the installation steps from README.md"
