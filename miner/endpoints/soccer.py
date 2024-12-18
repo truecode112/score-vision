@@ -13,8 +13,6 @@ from loguru import logger
 from fiber.logging_utils import get_logger
 from miner.core.models.config import Config
 from miner.dependencies import get_config
-from sports.common.ball import BallTracker
-from sports.common.team import TeamClassifier
 from sports.configs.soccer import SoccerPitchConfiguration
 from miner.utils.device import get_optimal_device
 from miner.utils.model_manager import ModelManager
@@ -44,35 +42,27 @@ async def process_soccer_video(
     start_time = time.time()
     
     try:
-        # Initialize video processor with the same device as model manager
         video_processor = VideoProcessor(
             device=model_manager.device,
-            cuda_timeout=10800.0,  # 3 hours max for any device
-            mps_timeout=10800.0,   # We'll use the same timeout for all devices
-            cpu_timeout=10800.0    # to ensure complete processing
+            cuda_timeout=10800.0,
+            mps_timeout=10800.0,
+            cpu_timeout=10800.0
         )
         
-        # Verify video is readable
         if not await video_processor.ensure_video_readable(video_path):
             raise HTTPException(
                 status_code=400,
                 detail="Video file is not readable or corrupted"
             )
         
-        # Get models from manager
         player_model = model_manager.get_model("player")
         pitch_model = model_manager.get_model("pitch")
-        ball_model = model_manager.get_model("ball")
         
-        # Initialize trackers
         tracker = sv.ByteTrack()
-        ball_tracker = BallTracker(buffer_size=20)
         
         tracking_data = {"frames": []}
         
-        # Process all frames
         async for frame_number, frame in video_processor.stream_frames(video_path):
-            # Process frame with models - hardware acceleration will be used if available
             pitch_result = pitch_model(frame, verbose=False)[0]
             keypoints = sv.KeyPoints.from_ultralytics(pitch_result)
             
@@ -80,15 +70,10 @@ async def process_soccer_video(
             detections = sv.Detections.from_ultralytics(player_result)
             detections = tracker.update_with_detections(detections)
             
-            ball_result = ball_model(frame, imgsz=640, verbose=False)[0]
-            ball_detections = sv.Detections.from_ultralytics(ball_result)
-            ball_detections = ball_tracker.update(ball_detections)
-            
-            # Process frame data
             frame_data = {
                 "frame_number": frame_number,
                 "keypoints": keypoints.xy[0].tolist() if keypoints and keypoints.xy is not None else [],
-                "players": [
+                "objects": [
                     {
                         "id": int(tracker_id),
                         "bbox": bbox.tolist(),
@@ -99,21 +84,10 @@ async def process_soccer_video(
                         detections.xyxy,
                         detections.class_id
                     )
-                ] if detections and detections.tracker_id is not None else [],
-                "ball": [
-                    {
-                        "id": int(tracker_id),
-                        "bbox": bbox.tolist()
-                    }
-                    for tracker_id, bbox in zip(
-                        ball_detections.tracker_id,
-                        ball_detections.xyxy
-                    )
-                ] if ball_detections and ball_detections.tracker_id is not None else []
+                ] if detections and detections.tracker_id is not None else []
             }
             tracking_data["frames"].append(frame_data)
             
-            # Log progress every 100 frames
             if frame_number % 100 == 0:
                 elapsed = time.time() - start_time
                 fps = frame_number / elapsed if elapsed > 0 else 0
@@ -122,7 +96,6 @@ async def process_soccer_video(
         processing_time = time.time() - start_time
         tracking_data["processing_time"] = processing_time
         
-        # Log final statistics
         total_frames = len(tracking_data["frames"])
         fps = total_frames / processing_time if processing_time > 0 else 0
         logger.info(
@@ -136,7 +109,6 @@ async def process_soccer_video(
         logger.error(f"Error processing video: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Video processing error: {str(e)}")
 
-# Create router instance
 router = APIRouter()
 
 @router.post("/challenge")
@@ -145,12 +117,10 @@ async def process_challenge(
     config: Config = Depends(get_config),
     model_manager: ModelManager = Depends(get_model_manager)
 ):
-    """Process a soccer challenge."""
     logger.info("Attempting to acquire miner lock...")
     async with miner_lock:
         logger.info("Miner lock acquired, processing challenge...")
         try:
-            # Get challenge data from request
             challenge_data = await request.json()
             challenge_id = challenge_data.get("challenge_id")
             video_url = challenge_data.get("video_url")
@@ -162,17 +132,14 @@ async def process_challenge(
             
             logger.info(f"Processing challenge {challenge_id} with video {video_url}")
             
-            # Download video
             video_path = await download_video(video_url)
             
             try:
-                # Process the video
                 tracking_data = await process_soccer_video(
                     video_path,
                     model_manager
                 )
                 
-                # Prepare response
                 response = {
                     "challenge_id": challenge_id,
                     "frames": tracking_data["frames"],
@@ -183,7 +150,6 @@ async def process_challenge(
                 return response
                 
             finally:
-                # Cleanup temp file
                 try:
                     os.unlink(video_path)
                 except:

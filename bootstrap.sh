@@ -3,7 +3,7 @@
 # install_prerequisites.sh
 set -e  # Exit on any error
 
-echo "Installing system prerequisites for sn44..."
+echo "Installing system prerequisites for Score Vision..."
 
 # Function to run command with or without sudo based on user permissions
 run_cmd() {

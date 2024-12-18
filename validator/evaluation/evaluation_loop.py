@@ -10,7 +10,7 @@ from validator.db.operations import DatabaseManager
 from validator.evaluation.evaluation import GSRValidator
 from validator.challenge.challenge_types import GSRResponse, ValidationResult, GSRChallenge
 from validator.evaluation.calculate_score import calculate_score
-from validator.challenges.api import update_task_scores
+from validator.utils.api import update_task_scores
 import httpx
 from validator.config import VALIDATION_DELAY
 

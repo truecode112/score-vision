@@ -41,7 +41,7 @@ from validator.evaluation.set_weights import set_weights
 from validator.evaluation.calculate_score import calculate_score
 from validator.db.schema import init_db
 from validator.evaluation.evaluation_loop import run_evaluation_loop
-from validator.challenges.api import get_next_challenge
+from validator.utils.api import get_next_challenge
 
 # Load environment variables
 validator_dir = Path(__file__).parent
