@@ -146,7 +146,7 @@ We welcome contributions to Score Vision. Our [Contributing Guidelines](CONTRIBU
 
 ## Community & Support
 
-Join our vibrant community on Discord at [Score Vision Discord]. Follow our latest updates on Twitter [@webuildscore]. For direct enquiries, reach us at hello@scorevision.com.
+Join our vibrant community on Discord at [Score Vision Discord]. Follow our latest updates on Twitter[@webuildscore](https://x.com/webuildscore). For direct enquiries, reach us at hello@wearescore.com.
 
 Our team combines extensive expertise in computer vision, sports technology, and distributed systems. We bring together leading minds in artificial intelligence, sports analytics, and blockchain technology to revolutionise video analysis.
 
