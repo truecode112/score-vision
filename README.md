@@ -1,89 +1,83 @@
 # Score Vision (SN44)
 
-Score Vision is a decentralized computer vision framework built on Bittensor, focusing on Game State Recognition (GSR) in football matches. Our framework enables complex computer vision tasks through lightweight validation, addressing the significant untapped potential in football video analysis.
+Score Vision is a decentralised computer vision framework built on Bittensor that drastically reduces the cost and time required for complex video analysis. By leveraging innovative lightweight validation techniques and aligned incentives, we're making advanced computer vision accessible and scalable.
+
+Our initial focus is Game State Recognition (GSR) in football - a strategic entry point into the $600 billion football industry, with $50 billion in betting and $30 billion in data services. Current solutions are prohibitively expensive: a single football match requires hundreds of hours of manual annotation, costing thousands of dollars. Score Vision aims to reduce these costs by 10x to 100x while dramatically improving speed and accuracy, unlocking new possibilities in sports analytics and beyond.
+
+**Get Started:**
+
+- [Miner Setup](miner/README.md)
+- [Validator Setup](validator/README.md)
 
 ## Overview
 
-Traditional video annotation costs range from $10-55 per minute, with complex sports scenarios requiring up to 4 hours of human labeling time per minute. A single football match (90+ minutes) requires approximately 360 hours of manual annotation work, costing $1,000-5,000 for comprehensive labeling.
+Our framework revolutionises video analysis through a novel lightweight validation approach that ensures accuracy whilst minimising computational overhead. This innovation enables rapid, cost-effective processing of complex visual data at scale - a breakthrough for industries dependent on real-time video analysis.
 
-Score Vision addresses these challenges through:
+### Why Football?
 
-- Decentralized computation for video processing
-- Lightweight validation using Vision Language Models (VLMs) and Human-in-the-loop
-- Carefully designed incentive mechanisms
-- Alignment with the SoccerNet-GSR framework
+Football represents the perfect proving ground for our technology: high-stakes, real-time decision making, and massive global reach. With our team's deep connections across the sports data industry, we're uniquely positioned to deploy and scale our solution. However, this is just the beginning - our framework is designed to extend beyond sports into broader computer vision applications.
+
+## Market Challenge
+
+The sports video analysis market currently faces significant barriers to entry and scalability. Manual video annotation alone costs between $10-55 per minute, with complex sports scenarios demanding up to four hours of human labelling per minute of footage. For a single football match, this translates to major costs and low efficiency.
+
+Traditional solutions struggle with fundamental technical limitations. Real-time processing capacity remains insufficient for livematch analysis. Accuracy suffers in dynamic environments with changing conditions and camera angles. Most systems lack seamless integration with existing sports analytics platforms.
+
+The SoccerNet Game State Recognition (GSR) challenge establishes the current industry benchmark for football video analysis. Our framework aims to surpass these standards whilst dramatically reducing both operational costs and processing time.
+
+Our solution serves four primary market segments. Professional, semi-pro and non-league clubs and leagues require comprehensive match analysis for performance optimisation. Broadcasters need real-time statistics to enhance viewer experience. Betting operators demand instant, accurate data for odds calculations. Analytics providers focus on delivering scalable insights across multiple matches.
 
 ## Architecture
 
-The system operates with three primary roles:
+Score Vision operates through a carefully orchestrated interaction between three key roles. Each role works in concert to enable efficient, decentralised video processing.
 
-1. **Miners**: Process video streams using computer vision models
+The video input stage begins with miners receiving video streams. Each frame undergoes processing for object detection and tracking, resulting in standardised outputs generated in real-time.
 
-   - Handle object detection and tracking
-   - Generate standardized outputs
-   - Implement custom optimization strategies
+The validation stage follows, where validators efficiently verify miners' outputs through selective frame analysis. VLM-based accuracy assessment ensures quality whilst maintaining a real-time feedback loop for network integrity.
 
-2. **Validators**: Verify miners' outputs efficiently
-
-   - Use selective frame analysis
-   - Employ VLMs for accuracy assessmentx
-   - Maintain network integrity
-
-3. **Subnet Owners**: Manage network parameters
-   - Oversee incentive mechanisms
-   - Adjust system parameters
-   - Ensure network adaptability
-
-## Setup Instructions
-
-- [Miner Setup Guide](miner/README.md)
-- [Validator Setup Guide](validator/README.md)
+Network management is overseen by Subnet Owner who maintain system health. They oversee the dynamic adjustment of incentives based on performance and optimise system parameters for maximum efficiency.
 
 ## Technical Implementation
 
-### Validation Mechanism
+### Core Innovation: Lightweight Validation
 
-> **Note:** Our validation mechanism is being constantly improved and tweaked during testnet phase especially.
+Our framework introduces a novel approach to computer vision validation that dramatically reduces computational overhead whilst maintaining high accuracy. This is achieved through our two-phase validation architecture.
 
-Our framework uses a novel two-phase validation approach:
+The first phase, Object Count Verification, provides fast numerical analysis of scene composition. It performs real-time validation of object presence and counts, structured output verification against expected game states, and serves as an initial quality gate with minimal computational cost.
 
-1. **Object Count Verification**
+The second phase, Intelligent Quality Assessment, employs advanced VLM-based validation of object relationships. It verifies spatial accuracy of bounding boxes and performs context-aware evaluation of detected game states, producing a normalised quality score between 0 and 1.
 
-   - Numerical analysis of scene composition
-   - Structured JSON output with precise counts
-   - Baseline establishment for quality evaluation
+### Technical Challenges & Solutions
 
-2. **Bounding Box Quality Assessment**
-   - Completeness verification
-   - Spatial accuracy examination
-   - Normalized quality scoring (0-1)
+Real-time processing at scale presents a significant challenge when handling multiple high-definition video streams simultaneously. We solve this through distributed computation across miners with optimised frame sampling, enabling concurrent analysis of multiple matches with minimal latency.
 
-### Frame Sampling
+Dynamic environments pose another substantial challenge. Rapid scene changes, varying camera angles, and weather conditions can impair analysis quality. Our solution combines robust object detection models with state-aware validation to maintain consistent accuracy across diverse viewing conditions.
 
-- Random frame selection
-- Unpredictable validation patterns
-- Efficient computational resource usage
+Traditional validation requires extensive computational resources. Our approach implements smart frame sampling and progressive validation stages, achieving a tenfold reduction in validation costs whilst maintaining accuracy.
 
-### Performance Metrics
+## Performance Metrics
 
-(Coming soon)
+### Core Performance Measurement
 
-The Game State Higher Order Tracking Accuracy (GS-HOTA) metric:
+The Game State Higher Order Tracking Accuracy (GS-HOTA) metric forms the foundation of our quality assessment:
 
-```
 GS-HOTA = √(Detection × Association)
-```
 
-Where:
+Detection measures object detection accuracy, whilst Association assesses tracking consistency across frames.
 
-- Detection: Measures object detection accuracy
-- Association: Assesses tracking consistency
+### Network Performance & Rewards
+
+Miner evaluation encompasses quality scoring based on detection and tracking accuracy, consistency measurement through continuous performance across frames, and response time assessment. Reward distribution is weighted according to accuracy and contribution volume.
+
+Validator assessment focuses on verification accuracy through consensus alignment, response efficiency in the validation process, and overall network contribution. Reward allocation reflects both validation accuracy and throughput.
+
+Our dynamic incentive system adjusts rewards based on network demands and performance. High performers receive additional incentives, whilst poor performance or malicious behaviour incurs penalties.
 
 ## Roadmap
 
 ### Phase 1 (Current)
 
-- [x] Game State Recognition challange implementation
+- [x] Game State Recognition challenge implementation
 - [x] VLM-based validation
 - [x] Incentive mechanism
 - [x] Testnet deploy on netuid 261
@@ -92,6 +86,7 @@ Where:
 
 ### Phase 2 (Q1 2025)
 
+- [ ] mainnet deploy on netuid 44
 - [ ] Human-in-the-loop validation
 - [ ] Additional footage type (grassroots)
 - [ ] Dashboard and Leaderboard
@@ -109,43 +104,52 @@ Where:
 - [ ] Developer tools and SDKs
 - [ ] Community contribution framework
 
-## Future Developments
+### Future Developments
 
-### Action Spotting and Captioning
+#### Action Spotting and Captioning
 
 - Event detection (goals, fouls, etc.)
 - Automated highlight generation
 - Natural language descriptions
 
-### Cross-Domain Applications
+#### Cross-Domain Applications
 
 - Basketball and tennis analysis
 - Security surveillance
 - Retail analytics
 
-### Technical Enhancements
+#### Technical Enhancements
 
 - Advanced VLM capabilities
 - Improved attribute assessment
 - Adaptive learning mechanisms
 - Open-source VLM development
 
+## Research & Innovation
+
+Our research paper, ["Score Vision: Enabling Complex Computer Vision Through Lightweight Validation - A Game State Recognition Framework for Live Football,"](https://drive.google.com/file/d/1oADURxxIZK0mTEqJPDudgXypohtFNkON/view) introduces groundbreaking approaches to computer vision validation.
+
+Our lightweight validation technique dramatically reduces computational overhead and resource requirements, making advanced computer vision accessible at scale. Distributed processing combined with intelligent validation enables real-time analysis of multiple video streams. Novel validation mechanisms ensure high accuracy whilst reducing computational complexity. Our framework enables the collection of new data points at unprecedented scale, contributing to the advancement of computer vision research.
+
+## Quick Start
+
+To begin with Score Vision, ensure your system meets our technical requirements and complete the environment setup process. Our installation process is straightforward and can be completed in minutes using our command-line interface.
+
+Detailed setup instructions for both miners and validators are available in our comprehensive setup guides. These guides provide step-by-step instructions for node configuration and network participation.
+
+- [Miner Setup Guide](miner/README.md)
+- [Validator Setup Guide](validator/README.md)
+
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details on:
+We welcome contributions to Score Vision. Our [Contributing Guidelines](CONTRIBUTING.md) provide comprehensive information about our code style standards, pull request process, development workflow, and testing requirements. We encourage both technical and non-technical contributions to our growing ecosystem.
 
-- Code style and standards
-- Pull request process
-- Development workflow
-- Testing requirements
+## Community & Support
 
-## Research
+Join our vibrant community on Discord at [Score Vision Discord]. Follow our latest updates on Twitter [@webuildscore]. For direct enquiries, reach us at hello@scorevision.com.
 
-This implementation is based on our research paper:
-"Score Vision: Enabling Complex Computer Vision Through Lightweight Validation - A Game State Recognition Framework for Live Football"
-
-For technical details and methodology, please refer to the [whitepaper](https://drive.google.com/file/d/1oADURxxIZK0mTEqJPDudgXypohtFNkON/view).
+Our team combines extensive expertise in computer vision, sports technology, and distributed systems. We bring together leading minds in artificial intelligence, sports analytics, and blockchain technology to revolutionise video analysis.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. Full details are available in the [LICENSE](LICENSE) file.
