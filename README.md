@@ -86,7 +86,7 @@ Our dynamic incentive system adjusts rewards based on network demands and perfor
 
 ### Phase 2 (Q1 2025)
 
-- [ ] mainnet deploy on netuid 44
+- [ ] mainnet deploy on netuid 44 week commencing 6 January
 - [ ] Human-in-the-loop validation
 - [ ] Additional footage type (grassroots)
 - [ ] Dashboard and Leaderboard
