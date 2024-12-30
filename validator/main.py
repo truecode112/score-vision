@@ -43,6 +43,7 @@ from validator.db.schema import init_db
 from validator.evaluation.evaluation_loop import run_evaluation_loop
 from validator.utils.api import get_next_challenge
 
+# TODO check why stopped working, only doing availablity check, but not logging anything.
 # Load environment variables
 validator_dir = Path(__file__).parent
 env_path = validator_dir / ".env"
@@ -219,6 +220,25 @@ async def weights_update_loop(db_manager: DatabaseManager) -> None:
             logger.error(f"Error in weights update loop: {str(e)}")
             await asyncio.sleep(WEIGHTS_INTERVAL.total_seconds())
 
+async def periodic_cleanup(db_manager: DatabaseManager, interval_hours: int = 24):
+    """
+    Periodically clean up old data from the database.
+    
+    Args:
+        db_manager: DatabaseManager instance
+        interval_hours: Number of hours between cleanup operations
+    """
+    while True:
+        try:
+            logger.info("Starting periodic database cleanup")
+            db_manager.cleanup_old_data()
+            logger.info("Periodic database cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during periodic cleanup: {str(e)}")
+        
+        # Wait for the next cleanup interval
+        await asyncio.sleep(interval_hours * 3600)
+
 async def main():
     """Main validator loop."""
     # Load configuration
@@ -267,6 +287,9 @@ async def main():
         weights_task = asyncio.create_task(
             weights_update_loop(db_manager)
         )
+        
+        # Start the periodic cleanup task
+        cleanup_task = asyncio.create_task(periodic_cleanup(db_manager))
         
         try:
             # Main challenge loop
@@ -372,8 +395,9 @@ async def main():
             # Cancel evaluation and weights loops
             evaluation_task.cancel()
             weights_task.cancel()
+            cleanup_task.cancel()
             try:
-                await asyncio.gather(evaluation_task, weights_task, return_exceptions=True)
+                await asyncio.gather(evaluation_task, weights_task, cleanup_task, return_exceptions=True)
             except asyncio.CancelledError:
                 pass
 

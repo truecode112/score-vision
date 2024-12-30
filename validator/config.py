@@ -40,12 +40,13 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
-CHALLENGE_INTERVAL = timedelta(minutes=5)
+CHALLENGE_INTERVAL = timedelta(minutes=10)
 CHALLENGE_TIMEOUT = timedelta(minutes=360)
-DB_PATH = Path("validator.db")
-WEIGHTS_INTERVAL = timedelta(minutes=21)
-VALIDATION_DELAY = timedelta(minutes=10)
 
+WEIGHTS_INTERVAL = timedelta(minutes=30)
+VALIDATION_DELAY = timedelta(minutes=200)
+
+DB_PATH = Path("validator.db")
 # Log initial configuration
 import logging
 logger = logging.getLogger(__name__)
