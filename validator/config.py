@@ -26,8 +26,8 @@ MIN_MINERS = 1
 MAX_MINERS = 30
 SCORE_THRESHOLD = 0.7
 FRAMES_TO_VALIDATE = 2
-#SCORE_VISION_API = "https://api.scorevision.io"
-SCORE_VISION_API = "http://localhost:8000"
+SCORE_VISION_API = "https://api.scorevision.io"
+#SCORE_VISION_API = "http://localhost:8000"
 
 VERSION_KEY = 2025
 
@@ -43,11 +43,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
-CHALLENGE_INTERVAL = timedelta(minutes=60)
+CHALLENGE_INTERVAL = timedelta(minutes=15)
 CHALLENGE_TIMEOUT = timedelta(minutes=360)
 
-WEIGHTS_INTERVAL = timedelta(minutes=90)
-VALIDATION_DELAY = timedelta(minutes=70)
+WEIGHTS_INTERVAL = timedelta(minutes=60)
+VALIDATION_DELAY = timedelta(minutes=30)
 
 DB_PATH = Path("validator.db")
 # Log initial configuration

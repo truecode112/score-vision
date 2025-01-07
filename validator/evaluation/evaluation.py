@@ -187,11 +187,11 @@ class GSRValidator:
             )
             
             # Log token usage
-            if hasattr(response, 'usage'):
-                logger.info(f"Frame {frame_idx} keypoint validation token usage:")
-                logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
-                logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
-                logger.info(f"  - Total tokens: {response.usage.total_tokens}")
+            # if hasattr(response, 'usage'):
+            #     logger.info(f"Frame {frame_idx} keypoint validation token usage:")
+            #     logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
+            #     logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
+            #     logger.info(f"  - Total tokens: {response.usage.total_tokens}")
             
             score_text = response.choices[0].message.content.strip()
             try:
@@ -385,11 +385,11 @@ class GSRValidator:
             )
             
             # Log token usage
-            if hasattr(response, 'usage'):
-                logger.info(f"Reference count token usage:")
-                logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
-                logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
-                logger.info(f"  - Total tokens: {response.usage.total_tokens}")
+            # if hasattr(response, 'usage'):
+            #     logger.info(f"Reference count token usage:")
+            #     logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
+            #     logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
+            #     logger.info(f"  - Total tokens: {response.usage.total_tokens}")
             
             content = response.choices[0].message.content.strip()
             
