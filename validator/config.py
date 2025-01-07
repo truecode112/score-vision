@@ -23,10 +23,13 @@ VALIDATOR_HOST = os.getenv("VALIDATOR_HOST", "0.0.0.0")
 
 # Default configuration values
 MIN_MINERS = 1
-MAX_MINERS = 100
+MAX_MINERS = 30
 SCORE_THRESHOLD = 0.7
 FRAMES_TO_VALIDATE = 2
-SCORE_VISION_API = "https://api.scorevision.io"
+#SCORE_VISION_API = "https://api.scorevision.io"
+SCORE_VISION_API = "http://localhost:8000"
+
+VERSION_KEY = 2025
 
 # Weights configuration
 WEIGHT_EVALUATION = 0.6
@@ -40,11 +43,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
-CHALLENGE_INTERVAL = timedelta(minutes=10)
+CHALLENGE_INTERVAL = timedelta(minutes=60)
 CHALLENGE_TIMEOUT = timedelta(minutes=360)
 
-WEIGHTS_INTERVAL = timedelta(minutes=30)
-VALIDATION_DELAY = timedelta(minutes=200)
+WEIGHTS_INTERVAL = timedelta(minutes=90)
+VALIDATION_DELAY = timedelta(minutes=70)
 
 DB_PATH = Path("validator.db")
 # Log initial configuration

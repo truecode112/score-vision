@@ -79,12 +79,12 @@ def get_active_nodes_with_stake() -> list[Node]:
         # Log details about active nodes
         logger.info(f"Found {len(active_nodes)} nodes with stake less than {MAX_STAKE} TAO")
         for node in active_nodes:
-            logger.info(f"Active node: {node.hotkey}")
-            logger.info(f"  - Node ID: {node.node_id}")
-            logger.info(f"  - Stake: {node.stake} TAO")
-            logger.info(f"  - IP: {node.ip}")
-            logger.info(f"  - Port: {node.port}")
-            logger.info(f"  - Last update: {node.last_updated}")
+            logger.info(f"Active node id: {node.node_id}, hotkey: {node.hotkey}, ip: {node.ip}, port: {node.port}, last_updated: {node.last_updated}")
+            # logger.info(f"  - Node ID: {node.node_id}")
+            # logger.info(f"  - Stake: {node.stake} TAO")
+            # logger.info(f"  - IP: {node.ip}")
+            # logger.info(f"  - Port: {node.port}")
+            # logger.info(f"  - Last update: {node.last_updated}")
         
         result = active_nodes[:MAX_MINERS] if MAX_MINERS else active_nodes
         logger.info(f"Returning {len(result)} nodes after MAX_MINERS limit of {MAX_MINERS}")
@@ -249,11 +249,6 @@ async def main():
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY environment variable not set")
     
-    # Initialize database manager and validator
-    logger.info(f"Initializing database manager with path: {DB_PATH}")
-    db_manager = DatabaseManager(DB_PATH)
-    validator = GSRValidator(openai_api_key=OPENAI_API_KEY)
-    
     # Load validator keys
     try:
         hotkey = load_hotkey_keypair(WALLET_NAME, HOTKEY_NAME)
@@ -261,6 +256,13 @@ async def main():
     except Exception as e:
         logger.error(f"Failed to load keys: {str(e)}")
         return
+
+    # Initialize database manager and validator
+    logger.info(f"Initializing database manager with path: {DB_PATH}")
+    db_manager = DatabaseManager(DB_PATH)
+    validator = GSRValidator(openai_api_key=OPENAI_API_KEY, validator_hotkey=hotkey.ss58_address)
+    
+
 
     # Initialize substrate connection
     substrate = get_substrate(
@@ -284,10 +286,8 @@ async def main():
         )
         
         # Start weights update loop as a separate task
-        weights_task = asyncio.create_task(
-            weights_update_loop(db_manager)
-        )
-        
+        weights_task = asyncio.create_task(weights_update_loop(db_manager))
+    
         # Start the periodic cleanup task
         cleanup_task = asyncio.create_task(periodic_cleanup(db_manager))
         

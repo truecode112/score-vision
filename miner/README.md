@@ -64,7 +64,7 @@ curl ifconfig.me
 2. Install Fiber (if doing locally):
 
 ```bash
-uv pip install "git+https://github.com/rayonlabs/fiber.git@2.0.1#egg=fiber[full]"
+uv pip install "git+https://github.com/rayonlabs/fiber.git@2.1.0#egg=fiber[full]"
 ```
 
 3. Register your IP:

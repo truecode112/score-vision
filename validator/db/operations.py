@@ -3,6 +3,7 @@ import sqlite3
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from pathlib import Path
+from loguru import logger
 
 from ..challenge.challenge_types import (
     ChallengeType,
@@ -129,7 +130,9 @@ class DatabaseManager:
         miner_hotkey: str, 
         response: GSRResponse,
         node_id: int,
-        processing_time: float = 0.0
+        processing_time: float = None,
+        received_at: datetime = None,
+        completed_at: datetime = None
     ) -> int:
         """Store a miner's response to a challenge"""
         conn = self.get_connection()
@@ -159,8 +162,8 @@ class DatabaseManager:
                 node_id,
                 processing_time,
                 json.dumps(response_dict),
-                now,
-                now
+                received_at,
+                completed_at
             ))
             
             response_id = cursor.lastrowid
@@ -180,91 +183,46 @@ class DatabaseManager:
             conn.close()
             
     def store_response_score(
-        self, 
-        response_id: int, 
-        validation_result: ValidationResult, 
-        validator_hotkey: str = None,
-        availability_score: float = 1.0,
-        speed_score: float = 1.0,
-        total_score: float = None
+        self,
+        response_id: int,
+        challenge_id: str,
+        validation_result: ValidationResult,
+        validator_hotkey: str,
+        miner_hotkey: str,
+        node_id: int,
+        availability_score: float,
+        speed_score: float,
+        total_score: float
     ) -> None:
-        """
-        Store the score for a response
-        
-        Args:
-            response_id: ID of the response
-            validation_result: ValidationResult object with evaluation score
-            validator_hotkey: Validator's public key
-            availability_score: Score based on miner availability (0-1)
-            speed_score: Score based on processing speed (0-1)
-            total_score: Optional total weighted score (if None, will use validation_result.score)
-        """
+        """Store the evaluation result for a response"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
-            now = datetime.utcnow()
-            
-            # Get response details
-            cursor.execute("""
-                SELECT challenge_id, miner_hotkey, processing_time
-                FROM responses
-                WHERE response_id = ?
-            """, (response_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"Response {response_id} not found")
-                
-            challenge_id, miner_hotkey, processing_time = row
-            
-            # Calculate total score if not provided
-            if total_score is None:
-                total_score = (
-                    validation_result.score * 0.6 +  # 60% evaluation
-                    availability_score * 0.3 +       # 30% availability
-                    speed_score * 0.1                # 10% speed
-                )
-            
-            # Update response with score and mark as evaluated
-            cursor.execute("""
-                UPDATE responses
-                SET score = ?,
-                    evaluated = TRUE,
-                    evaluated_at = ?
-                WHERE response_id = ?
-            """, (total_score, now, response_id))
-            
-            # Store detailed score breakdown
             cursor.execute("""
                 INSERT INTO response_scores (
-                    response_id,
-                    challenge_id,
-                    miner_hotkey,
-                    validator_hotkey,
-                    evaluation_score,
-                    availability_score,
-                    speed_score,
-                    total_score,
-                    response_time,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    response_id, challenge_id, evaluation_score, validator_hotkey,
+                    miner_hotkey, node_id, availability_score, speed_score, total_score, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 response_id,
                 challenge_id,
-                miner_hotkey,
-                validator_hotkey,
                 validation_result.score,
+                validator_hotkey,
+                miner_hotkey,
+                node_id,
                 availability_score,
                 speed_score,
                 total_score,
-                processing_time,
-                now
+                datetime.utcnow()
             ))
             
             conn.commit()
             
+        except Exception as e:
+            logger.error(f"Error storing response score: {str(e)}")
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -329,36 +287,85 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_miner_scores(self, hours: int = 24) -> Dict[str, float]:
-        """Get average miner scores from the last N hours"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def get_miner_scores(self) -> Dict[int, Dict[str, Any]]:
+        """Get calculated scores for miners from the last 24 hours"""
+        query = """
+        SELECT 
+            r.node_id,
+            r.miner_hotkey,
+            AVG(rs.evaluation_score) as performance_score,
+            AVG(rs.speed_score) as speed_score,
+            AVG(rs.availability_score) as availability_score,
+            AVG(r.processing_time) as avg_processing_time,
+            COUNT(*) as response_count,
+            AVG(rs.total_score) as final_score
+        FROM responses r
+        JOIN response_scores rs ON r.response_id = rs.response_id
+        WHERE r.received_at >= datetime('now', '-24 hours')
+        GROUP BY r.node_id, r.miner_hotkey
+        HAVING response_count > 0
+        """
         
-        try:
-            # Calculate cutoff time
-            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            rows = cursor.fetchall()
             
-            # Get average scores for each miner
-            cursor.execute("""
-                SELECT 
-                    miner_hotkey,
-                    AVG(total_score) as avg_score
-                FROM response_scores
-                WHERE created_at >= ?
-                GROUP BY miner_hotkey
-            """, (cutoff_time,))
+            miner_scores = {}
+            for row in rows:
+                node_id = int(row[0])
+                miner_scores[node_id] = {
+                    'miner_hotkey': row[1],
+                    'performance_score': row[2],
+                    'speed_score': row[3],
+                    'availability_score': row[4],
+                    'avg_processing_time': row[5],
+                    'response_count': row[6],
+                    'final_score': row[7]
+                }
             
-            # Convert to dictionary
-            scores = {}
-            for row in cursor.fetchall():
-                miner_hotkey, avg_score = row
-                scores[miner_hotkey] = float(avg_score) if avg_score is not None else 0.0
+            logger.info(f"Fetched scores for {len(miner_scores)} miners")
+            return miner_scores
+
+    def get_miner_scores_with_node_id(self) -> Dict[int, Dict[str, Any]]:
+        """Get calculated scores for miners from the last 24 hours, including node_id"""
+        query = """
+        SELECT 
+            r.node_id,
+            r.miner_hotkey,
+            AVG(rs.evaluation_score) as performance_score,
+            AVG(rs.speed_score) as speed_score,
+            AVG(rs.availability_score) as availability_score,
+            AVG(r.processing_time) as avg_processing_time,
+            COUNT(*) as response_count,
+            AVG(rs.total_score) as final_score
+        FROM responses r
+        JOIN response_scores rs ON r.response_id = rs.response_id
+        WHERE r.received_at >= datetime('now', '-24 hours')
+        GROUP BY r.node_id, r.miner_hotkey
+        HAVING response_count > 0
+        """
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            rows = cursor.fetchall()
             
-            logger.info(f"Retrieved scores for {len(scores)} miners from the last {hours} hours")
-            return scores
+            miner_scores = {}
+            for row in rows:
+                node_id = int(row[0])
+                miner_scores[node_id] = {
+                    'miner_hotkey': row[1],
+                    'performance_score': row[2],
+                    'speed_score': row[3],
+                    'availability_score': row[4],
+                    'avg_processing_time': row[5],
+                    'response_count': row[6],
+                    'final_score': row[7]
+                }
             
-        finally:
-            conn.close()
+            logger.info(f"Fetched scores for {len(miner_scores)} miners")
+            return miner_scores
 
     def get_challenge(self, challenge_id: str) -> Optional[Dict]:
         """Get a challenge from the database by ID"""
@@ -672,115 +679,22 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_miner_scores(self) -> List[Dict]:
-        """Get overall scores for all miners from evaluated responses"""
+
+    def get_availability_score(self, node_id: int) -> float:
+        """Get availability score for a node over the last 24 hours"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
             cursor.execute("""
-                SELECT 
-                    r.miner_hotkey,
-                    AVG(r.score) as overall_score,
-                    COUNT(*) as total_responses,
-                    AVG(r.processing_time) as avg_processing_time
-                FROM responses r
-                WHERE r.evaluated = TRUE
-                GROUP BY r.miner_hotkey
-            """)
-            
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows]
-            
+                SELECT COUNT(CASE WHEN is_available THEN 1 END) * 1.0 / COUNT(*) as availability_score
+                FROM availability_checks
+                WHERE node_id = ? AND checked_at >= datetime('now', '-24 hours')
+            """, (node_id,))
+            row = cursor.fetchone()
+            return float(row[0]) if row and row[0] is not None else 0.0
         finally:
             conn.close()
-
-    def get_node_scores(self) -> Dict[str, Dict[str, float]]:
-        """Get average scores for each node over the last 24 hours with component breakdowns"""
-        query = """
-        WITH performance_scores AS (
-            SELECT 
-                r.node_id,
-                r.miner_hotkey,
-                AVG(rs.evaluation_score) as performance_score,
-                AVG(CASE 
-                    WHEN r.processing_time <= 30 THEN 1.0
-                    WHEN r.processing_time <= 60 THEN 0.8
-                    WHEN r.processing_time <= 120 THEN 0.5
-                    ELSE 0.2
-                END) as speed_score,
-                COUNT(*) as response_count
-            FROM responses r
-            JOIN response_scores rs ON r.response_id = rs.response_id
-            WHERE r.received_at >= datetime('now', '-24 hours')
-            GROUP BY r.node_id, r.miner_hotkey
-            HAVING response_count > 0
-        )
-        SELECT 
-            p.node_id,
-            p.miner_hotkey,
-            p.performance_score,
-            p.speed_score,
-            p.response_count
-        FROM performance_scores p
-        WHERE p.performance_score IS NOT NULL
-        """
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            
-            scores = {}
-            for row in rows:
-                node_id = str(row[0])
-                hotkey = row[1]
-                perf_score = row[2]
-                speed_score = row[3]
-                response_count = row[4]
-                
-                # Get availability score
-                avail_score = self.get_availability_score(int(node_id))
-                
-                # Calculate final score with weights
-                final_score = (
-                    perf_score * 0.6 +  # Performance weight
-                    speed_score * 0.2 +  # Speed weight
-                    avail_score * 0.2    # Availability weight
-                )
-                
-                scores[node_id] = {
-                    'miner_hotkey': hotkey,
-                    'performance_score': perf_score,
-                    'speed_score': speed_score,
-                    'availability_score': avail_score,
-                    'final_score': final_score,
-                    'response_count': response_count
-                }
-            
-            logger.info(f"Calculated scores for {len(scores)} nodes")
-            for node_id, score_data in scores.items():
-                logger.debug(f"Node {node_id} scores:")
-                logger.debug(f"  Performance: {score_data['performance_score']:.3f}")
-                logger.debug(f"  Speed: {score_data['speed_score']:.3f}")
-                logger.debug(f"  Availability: {score_data['availability_score']:.3f}")
-                logger.debug(f"  Final Score: {score_data['final_score']:.3f}")
-                logger.debug(f"  Responses: {score_data['response_count']}")
-            
-            return scores
-
-    def get_availability_score(self, node_id: int) -> float:
-        """Get availability score for a node"""
-        query = """
-        SELECT COUNT(CASE WHEN is_available THEN 1 END) * 1.0 / COUNT(*) as availability_score
-        FROM availability_checks
-        WHERE node_id = ? AND checked_at >= datetime('now', '-24 hours')
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, (node_id,))
-            row = cursor.fetchone()
-            return row[0] if row and row[0] is not None else 0.0
 
     async def create_challenge(self, video_url: str, external_task_id: int) -> Optional[int]:
         """
@@ -942,5 +856,99 @@ class DatabaseManager:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error during database cleanup: {str(e)}")
+        finally:
+            conn.close()
+
+    def mark_response_as_evaluated(self, response_id: int) -> None:
+        """Mark a response as evaluated"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                UPDATE responses
+                SET evaluated = TRUE, evaluated_at = ?
+                WHERE response_id = ?
+            """, (datetime.utcnow(), response_id))
+            
+            conn.commit()
+            
+        finally:
+            conn.close()
+
+    def get_challenge_assignment_sent_at(self, challenge_id: str, miner_hotkey: str) -> Optional[datetime]:
+        """Get the sent_at timestamp for a challenge assignment"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT sent_at
+                FROM challenge_assignments
+                WHERE challenge_id = ? AND miner_hotkey = ?
+                AND status IN ('sent', 'completed')
+            """, (str(challenge_id), miner_hotkey))
+            row = cursor.fetchone()
+            return datetime.fromisoformat(row[0]) if row and row[0] else None
+        finally:
+            conn.close()
+
+    def update_response(
+        self,
+        response_id: int,
+        score: float,
+        evaluated: bool,
+        evaluated_at: datetime
+    ) -> None:
+        """Update a response with evaluation results"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                UPDATE responses
+                SET score = ?, evaluated = ?, evaluated_at = ?
+                WHERE response_id = ?
+            """, (score, evaluated, evaluated_at, response_id))
+            
+            conn.commit()
+            logger.info(f"Updated response {response_id} with score {score}")
+            
+        except Exception as e:
+            logger.error(f"Error updating response {response_id}: {str(e)}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def get_response_completed_at(self, response_id: str) -> Optional[datetime]:
+        """
+        Get the completed_at timestamp for a given response.
+        """
+        query = "SELECT completed_at FROM responses WHERE response_id = ?"
+        result = self.execute_query(query, (response_id,), fetch_one=True)
+        if result and result["completed_at"]:
+            return datetime.fromisoformat(result["completed_at"])
+        return None
+
+    def execute_query(self, query: str, params: tuple = (), fetch_one: bool = False) -> Optional[Any]:
+        """Execute a SQL query and return results."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            
+            if fetch_one:
+                result = cursor.fetchone()
+            else:
+                result = cursor.fetchall()
+                
+            conn.commit()
+            return result
+        except Exception as e:
+            logger.error(f"Database error executing query: {str(e)}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise
         finally:
             conn.close()

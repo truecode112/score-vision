@@ -231,3 +231,8 @@ validator/examples/
 
 miner/test_outputs/
 miner/data/
+
+validator/tests/
+validator/tests/test_evaluation.py
+validator/templates/evaluation_report.html
+miner/.python-version

@@ -139,105 +139,91 @@ async def get_next_challenge(validator_address: str) -> Optional[Dict[str, Any]]
 
 async def update_task_scores(
     validator_address: str,
-    task_id: int,
-    challenge_id: int,
-    miner_id: int,
+    task_id: str,
+    challenge_id: str,
+    miner_id: str,
     miner_hotkey: str,
-    response_data: dict,
+    response_data: str,
     evaluation_score: float,
     speed_score: float,
     availability_score: float,
     total_score: float,
     processing_time: float,
-    started_at: datetime,
-    completed_at: datetime
+    started_at: Optional[str],
+    completed_at: Optional[str]
 ) -> bool:
     """
-    Update task scores in the API with retry mechanism.
+    Update task scores via API.
+    
+    Args:
+        validator_address: Validator's public key hex
+        task_id: Task ID
+        challenge_id: Challenge ID
+        miner_id: Miner's node ID
+        miner_hotkey: Miner's public key hex
+        response_data: Response data as JSON string
+        evaluation_score: Quality evaluation score
+        speed_score: Speed score
+        availability_score: Availability score
+        total_score: Total weighted score
+        processing_time: Processing time in seconds
+        started_at: ISO format timestamp string when task started
+        completed_at: ISO format timestamp string when task completed
+        
+    Returns:
+        bool: True if successful, False otherwise
     """
-    max_retries = 3
-    retry_delay = 5  # seconds
-
-    for attempt in range(max_retries):
-        try:
-            # Log original data size
-            logger.info("Original response data size:")
-            log_data_size(response_data, prefix="Original: ")
-            
-            # Optimize response data to reduce payload size
-            optimized_response = optimize_response_data(response_data)
-            
-            # Log optimized data size
-            logger.info("Optimized response data size:")
-            log_data_size(optimized_response, prefix="Optimized: ")
-            
-            # Calculate size reduction
-            original_size = len(json.dumps(response_data))
-            optimized_size = len(json.dumps(optimized_response))
-            reduction_percent = ((original_size - optimized_size) / original_size) * 100
-            logger.info(f"Size reduction: {reduction_percent:.1f}%")
-            
-            payload = {
-                "id": task_id,
-                "challenge_id": challenge_id,
-                "miner_id": miner_id,
-                "miner_hotkey": miner_hotkey,
-                "response_data": optimized_response,
-                "evaluation_score": round(evaluation_score, 4),
-                "speed_score": round(speed_score, 4),
-                "availability_score": round(availability_score, 4),
-                "total_score": round(total_score, 4),
-                "processing_time": round(processing_time, 2),
-                "started_at": started_at.isoformat(),
-                "completed_at": completed_at.isoformat(),
-                "created_at": datetime.now().isoformat()
-            }
-            
-            # Log final payload size
-            logger.info("Final API payload size:")
-            log_data_size(payload, prefix="Final: ")
-            
-            url = f"{SCORE_VISION_API}/api/tasks/update"
-            params = {"validator_hotkey": validator_address}
-            
-            logger.info(f"Sending score update to API (Attempt {attempt + 1}/{max_retries}):")
-            logger.info(f"URL: {url}")
-            logger.info(f"Params: {params}")
-            logger.info(f"Payload:")
-            logger.info(f"  - task_id: {task_id}")
-            logger.info(f"  - challenge_id: {challenge_id}")
-            logger.info(f"  - miner_id: {miner_id}")
-            logger.info(f"  - miner_hotkey: {miner_hotkey}")
-            logger.info(f"  - evaluation_score: {evaluation_score}")
-            logger.info(f"  - speed_score: {speed_score}")
-            logger.info(f"  - availability_score: {availability_score}")
-            logger.info(f"  - total_score: {total_score}")
-            logger.info(f"  - processing_time: {processing_time}")
-            logger.info(f"  - started_at: {started_at.isoformat()}")
-            logger.info(f"  - completed_at: {completed_at.isoformat()}")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url,
-                    params=params,
-                    json=payload
-                )
-                response.raise_for_status()
+    try:
+        # Parse response data
+        response_data_dict = json.loads(response_data)
+        
+        # Prepare request data
+        data = {
+            "challenge_id": int(challenge_id),
+            "miner_id": int(miner_id),
+            "miner_hotkey": miner_hotkey,
+            "response_data": response_data_dict,
+            "evaluation_score": float(evaluation_score),
+            "speed_score": float(speed_score),
+            "availability_score": float(availability_score),
+            "total_score": float(total_score),
+            "processing_time": float(processing_time),
+            "started_at": started_at,  # Already in ISO format
+            "completed_at": completed_at  # Already in ISO format
+        }
+        
+        # Log request data (excluding response_data)
+        # log_data = data.copy()
+        # log_data.pop('response_data', None)
+        # logger.info(f"Sending task score update:")
+        # logger.info(f"URL: {SCORE_VISION_API}/api/tasks/update?validator_hotkey={validator_address}")
+        # logger.info("Request data:")
+        # for key, value in log_data.items():
+        #     logger.info(f"  {key}: {value}")
+        
+        # Make request
+        url = f"{SCORE_VISION_API}/api/tasks/update"
+        params = {"validator_hotkey": validator_address}
+        
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(url, params=params, json=data)
+                    if not response.is_success:
+                        logger.error(f"API Error Response: {response.text}")
+                    response.raise_for_status()
+                    return True
+                    
+            except httpx.HTTPError as e:
+                retry_count += 1
+                logger.error(f"Error updating task scores (Attempt {retry_count}/{max_retries}): {str(e)}")
+                if retry_count == max_retries:
+                    return False
+                await asyncio.sleep(1)  # Wait before retrying
                 
-            logger.info(f"API Response status: {response.status_code}")
-            return True
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.error(f"Task assignment not found for task_id: {task_id}. Skipping update.")
-                return False
-            logger.error(f"HTTP error occurred (Attempt {attempt + 1}/{max_retries}): {str(e)}")
-        except Exception as e:
-            logger.error(f"Error updating task scores (Attempt {attempt + 1}/{max_retries}): {str(e)}")
-
-        if attempt < max_retries - 1:
-            logger.info(f"Retrying in {retry_delay} seconds...")
-            await asyncio.sleep(retry_delay)
-
-    logger.error(f"Failed to update task scores after {max_retries} attempts. Skipping update.")
-    return False
+    except Exception as e:
+        logger.error(f"Error preparing task score update: {str(e)}")
+        return False

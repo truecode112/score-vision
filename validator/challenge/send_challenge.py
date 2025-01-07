@@ -7,8 +7,49 @@ from fiber.validator import client as validator
 from fiber import Keypair
 from validator.challenge.challenge_types import GSRChallenge, GSRResponse
 from validator.config import CHALLENGE_TIMEOUT
+from typing import List, Dict
+import uuid
 
 logger = get_logger(__name__)
+
+def optimize_coordinates(coords: List[float]) -> List[float]:
+    """Round coordinates to 2 decimal places to reduce data size."""
+    return [round(float(x), 2) for x in coords]
+
+def filter_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
+    """Filter out keypoints with zero coordinates and round remaining to 2 decimal places."""
+    return [optimize_coordinates(kp) for kp in keypoints if not (kp[0] == 0 and kp[1] == 0)]
+
+def optimize_response_data(response_data: Dict) -> Dict:
+    """Optimize response data by filtering zero keypoints and rounding bbox coordinates."""
+    optimized_data = {}
+    
+    # Handle frames data
+    if "frames" in response_data and isinstance(response_data["frames"], list):
+        frames = {}
+        for frame in response_data["frames"]:
+            frame_num = str(frame["frame_number"])
+            frame_data = {}
+            
+            # Optimize keypoints if present
+            if "keypoints" in frame and isinstance(frame["keypoints"], list):
+                frame_data["keypoints"] = filter_keypoints(frame["keypoints"])
+                
+            # Optimize bounding boxes if present
+            if "objects" in frame and isinstance(frame["objects"], list):
+                optimized_objects = []
+                for obj in frame["objects"]:
+                    optimized_obj = obj.copy()
+                    if "bbox" in obj:
+                        optimized_obj["bbox"] = optimize_coordinates(obj["bbox"])
+                    optimized_objects.append(optimized_obj)
+                frame_data["objects"] = optimized_objects
+                
+            frames[frame_num] = frame_data
+            
+        optimized_data = frames
+        
+    return optimized_data
 
 async def send_challenge(
     challenge: GSRChallenge,
@@ -29,7 +70,7 @@ async def send_challenge(
     logger.info(f"  Endpoint: {endpoint}")
     logger.info(f"  Hotkey: {hotkey}")
     logger.info(f"  Challenge ID: {challenge.challenge_id}")
-    logger.info(f"  Payload: {json.dumps(payload, indent=2)}")
+    logger.info(f"  Video URL: {challenge.video_url}")
 
     try:
         # First, store the challenge in the challenges table
@@ -84,24 +125,22 @@ async def send_challenge(
                 response.raise_for_status()
                 response_data = response.json()
                 
-                # Convert frames list to dictionary keyed by frame number
-                frames_data = {}
-                if 'frames' in response_data and isinstance(response_data['frames'], list):
-                    for frame in response_data['frames']:
-                        if 'frame_number' in frame:
-                            frame_num = str(frame['frame_number'])  # Convert to string key
-                            frames_data[frame_num] = frame
-                else:
-                    logger.warning("No frames data found in response")
+                # Log essential information about the response
+                logger.info(f"Received response for challenge {challenge.challenge_id}:")
+                logger.info(f"  Processing time: {processing_time:.2f} seconds")
+                logger.info(f"  Number of frames: {len(response_data.get('frames', []))}")
+                
+                # Optimize response data
+                optimized_response = optimize_response_data(response_data)
                 
                 # Create GSRResponse with parsed data
                 gsr_response = GSRResponse(
                     challenge_id=challenge.challenge_id,
-                    frames=frames_data,
-                    processing_time=response_data.get('processing_time', 0.0),
-                    node_id=node_id,
                     miner_hotkey=hotkey,
-                    received_at=received_time
+                    node_id=node_id,
+                    frames=optimized_response,
+                    processing_time=processing_time,
+                    received_at=sent_time
                 )
                 
                 # Store response in responses table
@@ -112,14 +151,17 @@ async def send_challenge(
                         miner_hotkey=hotkey,
                         response=gsr_response,
                         node_id=node_id,
-                        processing_time=processing_time
+                        processing_time=processing_time,
+                        received_at=sent_time,
+                        completed_at=received_time
                     )
                     
                     logger.info(f"Stored response {response_id} in database")
                 
             except Exception as e:
                 logger.error(f"Response error: {str(e)}")
-                logger.error(f"Response body: {response.text}")
+                logger.error(f"Response status code: {response.status_code}")
+                logger.error(f"Response headers: {response.headers}")
                 raise
 
             logger.info(f"Challenge {challenge.challenge_id} sent successfully to {hotkey} (node {node_id})")
@@ -129,11 +171,9 @@ async def send_challenge(
             if should_close_client:
                 logger.debug("Closing HTTP client")
                 await client.aclose()
-            
+                
     except Exception as e:
-        if db_manager:
-            logger.debug("Marking challenge as failed in database")
-            db_manager.mark_challenge_failed(challenge.challenge_id, hotkey)
-        logger.error(f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}")
-        logger.exception("Full error traceback:")
-        raise
+        error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
+        logger.error(error_msg)
+        logger.error("Full error traceback:", exc_info=True)
+        raise ValueError(error_msg)

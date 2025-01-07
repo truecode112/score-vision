@@ -94,22 +94,18 @@ def get_schema_v1() -> List[str]:
         # Response scores table
         """
         CREATE TABLE IF NOT EXISTS response_scores (
-            score_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             response_id INTEGER NOT NULL,
-            challenge_id INTEGER NOT NULL,
+            challenge_id TEXT NOT NULL,
+            evaluation_score REAL NOT NULL,
+            validator_hotkey TEXT NOT NULL,
             miner_hotkey TEXT NOT NULL,
-            validator_hotkey TEXT,
-            evaluation_score FLOAT NOT NULL,
-            availability_score FLOAT NOT NULL,
-            speed_score FLOAT NOT NULL,
-            total_score FLOAT NOT NULL,
-            speed_scoring_factor FLOAT,
-            response_time FLOAT,
-            feedback TEXT,
+            node_id INTEGER NOT NULL,
+            availability_score REAL NOT NULL,
+            speed_score REAL NOT NULL,
+            total_score REAL NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (response_id) REFERENCES responses(response_id),
-            FOREIGN KEY (challenge_id) REFERENCES challenges(challenge_id),
-            FOREIGN KEY (challenge_id, miner_hotkey) REFERENCES challenge_assignments(challenge_id, miner_hotkey)
+            FOREIGN KEY (response_id) REFERENCES responses (response_id)
         )
         """
     ]

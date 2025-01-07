@@ -11,7 +11,8 @@ from validator.config import (
     SUBTENSOR_NETWORK, 
     SUBTENSOR_ADDRESS,
     WALLET_NAME,
-    HOTKEY_NAME
+    HOTKEY_NAME,
+    VERSION_KEY
 )
 
 logger = get_logger(__name__)
@@ -30,40 +31,32 @@ async def set_weights(
         
         # Get validator node ID and version key
         validator_node_id = substrate.query("SubtensorModule", "Uids", [NETUID, keypair.ss58_address]).value
-        version_key = substrate.query("SubtensorModule", "WeightsVersionKey", [NETUID]).value
-        
+        v_key = substrate.query("SubtensorModule", "WeightsVersionKey", [NETUID]).value
+        logger.info(f"Subnet Version key: {v_key}")
+        version_key = VERSION_KEY
         # Get all active nodes
         nodes = get_nodes_for_netuid(substrate=substrate, netuid=NETUID)
         
-        # Use the existing get_node_scores method
-        node_scores = db_manager.get_node_scores()
-        
+        # Get miner scores from the database
+        miner_scores = db_manager.get_miner_scores_with_node_id()
+        logger.info(f"Fetched scores for {len(miner_scores)} miners")
+
         # Calculate weights
         node_weights: List[float] = []
         node_ids: List[int] = []
         
-        # First pass - get min/max scores for normalization
-        scores = []
         for node in nodes:
-            score_data = node_scores.get(str(node.node_id), {'final_score': 0.0})
-            scores.append(score_data['final_score'])
-        
-        # Normalize scores to [0, 1] range
-        min_score = min(scores) if scores else 0.0
-        max_score = max(scores) if scores else 1.0
-        score_range = max_score - min_score
-        
-        # Second pass - normalize and prepare weights
-        for node in nodes:
-            # Normalize score to [0, 1]
-            score_data = node_scores.get(str(node.node_id), {'final_score': 0.0})
-            normalized_score = 0.0
-            if score_range > 0:
-                normalized_score = (score_data['final_score'] - min_score) / score_range
+            node_id = node.node_id
+            score_data = miner_scores.get(node_id, {
+                'final_score': 0.0,
+                'performance_score': 0.0,
+                'speed_score': 0.0,
+                'availability_score': 0.0,
+                'avg_processing_time': 0.0
+            })
             
-            # Add node and normalized weight
-            node_ids.append(node.node_id)
-            node_weights.append(normalized_score)
+            node_ids.append(node_id)
+            node_weights.append(score_data['final_score'])
         
         # Ensure weights sum to 1.0
         total_weight = sum(node_weights)
@@ -76,11 +69,12 @@ async def set_weights(
         # Log detailed weight information
         logger.info(f"Setting weights for {len(nodes)} nodes")
         for node_id, weight, node in zip(node_ids, node_weights, nodes):
-            score_data = node_scores.get(str(node_id), {
+            score_data = miner_scores.get(node_id, {
                 'final_score': 0.0,
                 'performance_score': 0.0,
                 'speed_score': 0.0,
-                'availability_score': 0.0
+                'availability_score': 0.0,
+                'avg_processing_time': 0.0
             })
             logger.info(
                 f"Node {node_id} ({node.hotkey}): "
@@ -88,6 +82,7 @@ async def set_weights(
                 f"speed={score_data['speed_score']:.4f}, "
                 f"avail={score_data['availability_score']:.4f}, "
                 f"final={score_data['final_score']:.4f}, "
+                f"avg_time={score_data['avg_processing_time']:.4f}, "
                 f"weight={weight:.4f}"
             )
         
