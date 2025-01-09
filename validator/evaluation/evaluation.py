@@ -205,6 +205,13 @@ class GSRValidator:
             logger.error(f"Error in keypoint validation: {str(e)}")
             return 0.0
 
+    def resize_frame(self, frame: np.ndarray, target_width: int = 400) -> np.ndarray:
+        """Resize frame maintaining aspect ratio."""
+        height, width = frame.shape[:2]
+        aspect = width / height
+        target_height = int(target_width / aspect)
+        return cv2.resize(frame, (target_width, target_height))
+
     async def evaluate_response(
         self, 
         response: GSRResponse, 
@@ -225,9 +232,10 @@ class GSRValidator:
             chosen_frames = self.select_random_frames(video_path)
             logger.info(f"Selected {len(chosen_frames)} frames for validation: {chosen_frames}")
             
-            # Create debug frames directory
-            debug_dir = Path("debug_frames")
-            debug_dir.mkdir(exist_ok=True)
+            # Create debug frames directory with date-based subdirectory
+            current_date = datetime.now().strftime("%Y%m%d")
+            debug_dir = Path("debug_frames") / current_date
+            debug_dir.mkdir(parents=True, exist_ok=True)
             
             # Prepare frame evaluation tasks
             frame_tasks = []
@@ -253,9 +261,13 @@ class GSRValidator:
                 try:
                     evaluation = await task
                     
-                    # Save debug frames
+                    # Save annotated frame with new naming convention
                     annotated_frame = self.draw_annotations(frame, frame_data)
-                    debug_path = debug_dir / f"frame_{frame_num}_annotated.jpg"
+                    # Resize frame
+                    annotated_frame = self.resize_frame(annotated_frame, target_width=400)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    debug_path = debug_dir / f"challenge_{challenge.challenge_id}_node_{response.node_id}_frame_{frame_num}_{timestamp}.jpg"
                     cv2.imwrite(str(debug_path), annotated_frame)
                     
                     evaluation['frame_number'] = frame_num
@@ -267,14 +279,14 @@ class GSRValidator:
                             response_id=response.response_id,
                             challenge_id=challenge.challenge_id,
                             miner_hotkey=response.miner_hotkey,
-                            node_id=response.node_id,  # Now correctly passing node_id
+                            node_id=response.node_id,
                             frame_id=frame_num,
                             frame_timestamp=frame_num / 30.0,  # Assuming 30fps
                             frame_score=evaluation["scores"]["final_score"],
-                            raw_frame_path=str(debug_dir / f"frame_{frame_num}_raw.jpg"),
+                            raw_frame_path="",  # No longer saving raw frames
                             annotated_frame_path=str(debug_path),
                             vlm_response=evaluation["count_validation"]["reference_counts"],
-                            feedback=""  # Keeping feedback empty as requested
+                            feedback=""
                         )
                 except Exception as e:
                     logger.error(f"Error processing frame {frame_num}: {str(e)}")
@@ -305,7 +317,7 @@ class GSRValidator:
             return ValidationResult(
                 score=avg_score,
                 frame_scores=frame_scores,
-                feedback=""  # Keeping feedback empty as requested
+                feedback=""
             )
             
         except Exception as e:
