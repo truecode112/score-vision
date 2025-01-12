@@ -44,7 +44,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
 CHALLENGE_INTERVAL = timedelta(minutes=15)
-CHALLENGE_TIMEOUT = timedelta(minutes=360)
+CHALLENGE_TIMEOUT = timedelta(minutes=100)
 
 WEIGHTS_INTERVAL = timedelta(minutes=60)
 VALIDATION_DELAY = timedelta(minutes=30)

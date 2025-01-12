@@ -56,6 +56,7 @@ class ChallengeTask:
         self.timestamp = timestamp
         self.challenge = challenge
         self.miner_hotkey = miner_hotkey
+        self.frames_to_validate = None  # Will be set after all responses are received
 
 def get_active_nodes_with_stake() -> list[Node]:
     """Get list of active nodes that meet the stake requirement (less than 100 TAO)."""
@@ -79,7 +80,7 @@ def get_active_nodes_with_stake() -> list[Node]:
         # Log details about active nodes
         logger.info(f"Found {len(active_nodes)} nodes with stake less than {MAX_STAKE} TAO")
         for node in active_nodes:
-            logger.info(f"Active node id: {node.node_id}, hotkey: {node.hotkey}, ip: {node.ip}, port: {node.port}, last_updated: {node.last_updated}")
+            logger.info(f"Active node id: {node.node_id} hotkey: {node.hotkey}, ip: {node.ip}, port: {node.port}, last_updated: {node.last_updated}")
             # logger.info(f"  - Node ID: {node.node_id}")
             # logger.info(f"  - Stake: {node.stake} TAO")
             # logger.info(f"  - IP: {node.ip}")
@@ -275,26 +276,70 @@ async def main():
         active_challenge_tasks = []  # Track active challenges
         
         # Start evaluation loop as a separate task
+        logger.info("Starting evaluation loop task...")
         evaluation_task = asyncio.create_task(
             run_evaluation_loop(
                 db_path=DB_PATH,
                 openai_api_key=OPENAI_API_KEY,
                 validator_hotkey=hotkey.ss58_address,
                 batch_size=10,
-                sleep_interval=60
+                sleep_interval=10
             )
+        )
+        evaluation_task.add_done_callback(
+            lambda t: logger.error(f"Evaluation task ended unexpectedly: {t.exception()}")
+            if t.exception() else None
         )
         
         # Start weights update loop as a separate task
+        logger.info("Starting weights update task...")
         weights_task = asyncio.create_task(weights_update_loop(db_manager))
+        weights_task.add_done_callback(
+            lambda t: logger.error(f"Weights task ended unexpectedly: {t.exception()}")
+            if t.exception() else None
+        )
     
         # Start the periodic cleanup task
+        logger.info("Starting cleanup task...")
         cleanup_task = asyncio.create_task(periodic_cleanup(db_manager))
+        cleanup_task.add_done_callback(
+            lambda t: logger.error(f"Cleanup task ended unexpectedly: {t.exception()}")
+            if t.exception() else None
+        )
         
         try:
             # Main challenge loop
+            iteration = 0
             while True:
                 try:
+                    iteration += 1
+                    logger.info(f"Main loop iteration {iteration}")
+                    
+                    # Check if any background tasks failed
+                    for task in [evaluation_task, weights_task, cleanup_task]:
+                        if task.done() and not task.cancelled():
+                            exc = task.exception()
+                            if exc:
+                                logger.error(f"Background task failed: {exc}")
+                                # Restart the failed task
+                                if task == evaluation_task:
+                                    logger.info("Restarting evaluation loop...")
+                                    evaluation_task = asyncio.create_task(
+                                        run_evaluation_loop(
+                                            db_path=DB_PATH,
+                                            openai_api_key=OPENAI_API_KEY,
+                                            validator_hotkey=hotkey.ss58_address,
+                                            batch_size=10,
+                                            sleep_interval=10
+                                        )
+                                    )
+                                elif task == weights_task:
+                                    logger.info("Restarting weights update loop...")
+                                    weights_task = asyncio.create_task(weights_update_loop(db_manager))
+                                elif task == cleanup_task:
+                                    logger.info("Restarting cleanup task...")
+                                    cleanup_task = asyncio.create_task(periodic_cleanup(db_manager))
+
                     # Clean up completed challenge tasks
                     active_challenge_tasks = [
                         task for task in active_challenge_tasks 
@@ -307,6 +352,7 @@ async def main():
                     
                     if num_active < MIN_MINERS:
                         logger.warning(f"Only {num_active} active nodes with sufficient stake (minimum {MIN_MINERS} required)")
+                        logger.info(f"Will check again in {CHALLENGE_INTERVAL.total_seconds()} seconds...")
                         await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
@@ -318,6 +364,7 @@ async def main():
                     
                     if num_available < MIN_MINERS:
                         logger.warning(f"Only {num_available} nodes are available (minimum {MIN_MINERS} required)")
+                        logger.info(f"Sleeping for {CHALLENGE_INTERVAL.total_seconds()} seconds before next availability check...")
                         await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
@@ -328,13 +375,21 @@ async def main():
                     new_challenge_tasks = []
                     
                     # Fetch next challenge from API
+                    logger.info("Fetching next challenge from API...")
                     challenge_data = await get_next_challenge(hotkey.ss58_address)
                     if not challenge_data:
-                        logger.warning("No challenge available from API, sleeping...")
+                        logger.warning("No challenge available from API")
+                        logger.info(f"Sleeping for {CHALLENGE_INTERVAL.total_seconds()} seconds before next challenge check...")
                         await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
                     logger.info(f"Got challenge from API: task_id={challenge_data['task_id']}")
+                    
+                    # Log background task status
+                    logger.info("Background task status:")
+                    logger.info(f"  - Evaluation task running: {not evaluation_task.done()}")
+                    logger.info(f"  - Weights task running: {not weights_task.done()}")
+                    logger.info(f"  - Cleanup task running: {not cleanup_task.done()}")
                     
                     for node in available_nodes:
                         # Create challenge

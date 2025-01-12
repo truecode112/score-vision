@@ -20,56 +20,320 @@ from validator.challenge.challenge_types import (
 from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
 
+# Add timeout constants
+OPENAI_TIMEOUT = 30.0  # seconds
+BATCH_TIMEOUT = 60.0   # seconds
+FRAME_TIMEOUT = 180.0  # seconds
+MAX_CONCURRENT_CALLS = 3
+VLM_RATE_LIMIT = 10  # requests per second
+VLM_BATCH_SIZE = 5   # number of images per batch
+
 logger = get_logger(__name__)
 
-# Define class mappings
+# Class IDs
 BALL_CLASS_ID = 0
 GOALKEEPER_CLASS_ID = 1
 PLAYER_CLASS_ID = 2
 REFEREE_CLASS_ID = 3
 
-# Define colors for annotations
+# Colors
 COLORS = {
-    "player": (0, 255, 0),      # Green boxes
-    "goalkeeper": (0, 0, 255),  # Red boxes
-    "referee": (255, 0, 0),     # Blue boxes
-    "ball": (0, 255, 255),      # Yellow boxes
-    "keypoint": (255, 0, 255)   # Bright pink
+    "player": (0, 255, 0),
+    "goalkeeper": (0, 0, 255),
+    "referee": (255, 0, 0),
+    "ball": (0, 255, 255),
+    "keypoint": (255, 0, 255)
 }
 
 def optimize_coordinates(coords: List[float]) -> List[float]:
-    """Round coordinates to 2 decimal places to reduce data size."""
+    """Round coordinates to 2 decimals."""
     return [round(float(x), 2) for x in coords]
 
 def filter_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
-    """Filter out keypoints with zero coordinates and round remaining to 2 decimal places."""
+    """Remove zero-coord keypoints; round others to 2 decimals."""
     return [optimize_coordinates(kp) for kp in keypoints if not (kp[0] == 0 and kp[1] == 0)]
+
+class RateLimiter:
+    def __init__(self, rate_limit: int):
+        self.rate_limit = rate_limit
+        self.tokens = rate_limit
+        self.last_update = datetime.now()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self):
+        async with self.lock:
+            now = datetime.now()
+            time_passed = (now - self.last_update).total_seconds()
+            self.tokens = min(self.rate_limit, self.tokens + time_passed * self.rate_limit)
+            
+            if self.tokens < 1:
+                wait_time = (1 - self.tokens) / self.rate_limit
+                await asyncio.sleep(wait_time)
+                self.tokens = 1
+            
+            self.tokens -= 1
+            self.last_update = now
 
 class GSRValidator:
     def __init__(self, openai_api_key: str, validator_hotkey: str):
         self.openai_api_key = openai_api_key
         self.validator_hotkey = validator_hotkey
-        self.db_manager = None  # This will be set later
-        self._video_cache = {}  # Cache of downloaded videos
+        self.db_manager = None
+        self._video_cache = {}
         self.client = OpenAI(api_key=openai_api_key)
+        self.chutes_api_key = os.environ.get("API_KEY")
+        self.chutes_url = "https://chutes-opengvlab-internvl2-5-78b.chutes.ai/v1/chat/completions"
+        self.rate_limiter = RateLimiter(VLM_RATE_LIMIT)
+
+    async def ask_vlm_batch(
+        self,
+        messages_list: List[List[Dict]],
+        max_tokens: int = 500,
+        temperature: float = 0.2,
+        model_chutes: str = "OpenGVLab/InternVL2_5-78B",
+        model_openai: str = "gpt-4o"
+    ) -> List[Optional[str]]:
+        """
+        Process multiple VLM requests in batches with rate limiting.
+        """
+        results = []
+        for messages in messages_list:
+            await self.rate_limiter.acquire()
+            try:
+                result = await self.ask_vlm(messages, max_tokens, temperature, model_chutes, model_openai)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Batch VLM call error: {str(e)}")
+                results.append(None)
+        return results
+
+    async def get_reference_counts_batch(self, frames: List[np.ndarray]) -> List[Dict]:
+        """
+        Get reference counts for multiple frames in batches, including an explicit index
+        so we can match responses to the correct frames.
+        """
+        messages_list = []
+        for i, frame in enumerate(frames):
+            encoded = self.encode_image(frame)
+            messages = [
+                {"role": "system", "content": "You are an expert at counting objects in soccer match frames."},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Frame index {i}: {COUNT_PROMPT}\n"
+                                f"Please return counts as JSON in the form: "
+                                f"{{\"index\": {i}, \"player\": X, \"soccer ball\": Y, \"referee\": Z, \"goalkeeper\": W}}"
+                            )
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"}
+                        }
+                    ]
+                }
+            ]
+            messages_list.append(messages)
+
+        # Process in batches
+        batch_size = VLM_BATCH_SIZE
+        results = []
+        for i in range(0, len(messages_list), batch_size):
+            batch = messages_list[i:i + batch_size]
+            batch_results = await self.ask_vlm_batch(batch)
+            results.extend(batch_results)
+
+        # Prepare a placeholder list so we can insert by index
+        processed_results = [{} for _ in frames]
+
+        # Process results
+        for content in results:
+            try:
+                if not content:
+                    continue
+                cleaned_content = self.clean_json_response(content)
+                counts = json.loads(cleaned_content)
+                if not isinstance(counts, dict):
+                    continue
+
+                # We expect an "index" field to ensure correct alignment
+                idx = counts.pop("index", None)
+                if idx is None or not (0 <= idx < len(processed_results)):
+                    continue
+
+                # Normalize the keys
+                normalized = {}
+                for key, value in counts.items():
+                    key_lower = key.lower()
+                    if isinstance(value, (int, float)):
+                        if "ball" in key_lower:
+                            normalized["ball"] = int(value)
+                        elif "goalkeeper" in key_lower:
+                            normalized["goalkeeper"] = int(value)
+                        elif "referee" in key_lower:
+                            normalized["referee"] = int(value)
+                        elif "player" in key_lower:
+                            normalized["player"] = int(value)
+
+                processed_results[idx] = normalized
+
+            except Exception as e:
+                logger.error(f"Error processing reference count result: {str(e)}")
+
+        return processed_results
+
+    async def ask_vlm(
+        self,
+        messages: List[Dict],
+        max_tokens: int = 500,
+        temperature: float = 0.2,
+        model_chutes: str = "OpenGVLab/InternVL2_5-78B",
+        model_openai: str = "gpt-4o"
+    ) -> Optional[str]:
+        """
+        Single helper for VLM calls. Attempts Chutes first, then OpenAI fallback.
+        Returns the raw content string or None if all fail.
+        """
+        try:
+            async def _call():
+                payload = {"model": model_chutes, "messages": messages, "max_tokens": max_tokens}
+                if self.chutes_api_key:
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            resp = await client.post(
+                                self.chutes_url,
+                                json=payload,
+                                headers={"Authorization": self.chutes_api_key},
+                                timeout=30.0
+                            )
+                            resp.raise_for_status()
+                            return resp.json()["choices"][0]["message"]["content"]
+                    except Exception as e:
+                        logger.warning(f"Chutes API error, will fallback: {str(e)}")
+
+                try:
+                    openai_resp = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.client.chat.completions.create,
+                            model=model_openai,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            temperature=temperature
+                        ),
+                        timeout=OPENAI_TIMEOUT
+                    )
+                    return openai_resp.choices[0].message.content
+                except Exception as e:
+                    logger.error(f"OpenAI fallback error: {str(e)}")
+                return None
+
+            return await asyncio.wait_for(_call(), timeout=OPENAI_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error("VLM call timed out")
+        except Exception as e:
+            logger.error(f"VLM call error: {str(e)}")
+        return None
+
+    def clean_json_response(self, content: str) -> str:
+        """Enhanced cleaning of VLM responses."""
+        if not content:
+            return "[]"
         
+        # Remove any markdown formatting
+        content = content.replace('```json', '').replace('```', '')
+        
+        # Remove newlines and extra spaces
+        content = ' '.join(content.split())
+        
+        # If it looks like an array but isn't properly formatted
+        if '[' in content and ']' in content:
+            try:
+                # Extract everything between the first [ and last ]
+                array_content = content[content.find('['):content.rfind(']')+1]
+                # Try parsing it
+                json.loads(array_content)
+                return array_content
+            except json.JSONDecodeError:
+                pass
+        
+        return content
+
+    async def get_reference_counts(self, frame: np.ndarray) -> Dict:
+        """
+        Count key entities in the frame.
+        Uses a system prompt, fallback handled by ask_vlm.
+        """
+        encoded = self.encode_image(frame)
+        messages = [
+            {"role": "system", "content": "You are an expert at counting objects in soccer match frames."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": COUNT_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"}
+                    }
+                ]
+            }
+        ]
+        try:
+            content = await self.ask_vlm(messages)
+            logger.info(f"VLM Response for reference counts: {content}")
+            if not content:
+                logger.warning("VLM returned empty content for reference counts")
+                return {}
+
+            cleaned_content = self.clean_json_response(content)
+            logger.info(f"Cleaned VLM Response: {cleaned_content}")
+            
+            try:
+                counts = json.loads(cleaned_content)
+                if not isinstance(counts, dict):
+                    logger.warning(f"VLM response is not a dictionary: {counts}")
+                    return {}
+                    
+                # Normalize the keys
+                normalized = {}
+                for key, value in counts.items():
+                    key = key.lower()
+                    if isinstance(value, (int, float)):
+                        if "ball" in key or "soccer ball" in key:
+                            normalized["soccer ball"] = int(value)
+                        elif "goalkeeper" in key:
+                            normalized["goalkeeper"] = int(value)
+                        elif "referee" in key:
+                            normalized["referee"] = int(value)
+                        elif "player" in key:
+                            normalized["player"] = int(value)
+                
+                logger.info(f"Normalized counts: {normalized}")
+                return normalized
+                
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse VLM response as JSON: {cleaned_content}")
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Reference count error: {str(e)}")
+            return {}
+
     async def download_video(self, video_url: str) -> Path:
         """
-        Download video (cached if possible) from a direct link or Google Drive URL.
+        Download video or return from cache if possible. Handles direct URLs or Google Drive.
         """
         if video_url in self._video_cache:
             cached_path = self._video_cache[video_url]
             if cached_path.exists():
-                logger.info(f"Using cached video from: {cached_path}")
+                logger.info(f"Using cached video at: {cached_path}")
                 return cached_path
             else:
                 del self._video_cache[video_url]
-        
+
         logger.info(f"Downloading video from: {video_url}")
-        
-        # Handle Google Drive URL
         if 'drive.google.com' in video_url:
-            logger.debug("Detected Google Drive URL, attempting direct download link...")
             file_id = None
             if 'id=' in video_url:
                 file_id = video_url.split('id=')[1].split('&')[0]
@@ -78,776 +342,708 @@ class GSRValidator:
             if not file_id:
                 raise ValueError("Failed to extract Google Drive file ID from URL")
             video_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
-        
-        max_retries = 3
-        retry_delay = 5
-        timeout = 60.0  # Increase timeout to 60 seconds
-        
+
+        max_retries, retry_delay, timeout = 3, 5, 60.0
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    response = await client.get(video_url)
-                    response.raise_for_status()
-                    
+                    resp = await client.get(video_url)
+                    resp.raise_for_status()
                     temp_dir = Path(tempfile.gettempdir())
-                    video_path = temp_dir / f"video_{datetime.now().timestamp()}.mp4"
-                    video_path.write_bytes(response.content)
-                    logger.info(f"Video downloaded to: {video_path}")
-                    
-                    # Verify
-                    if not video_path.exists() or video_path.stat().st_size == 0:
-                        raise ValueError("Downloaded video is empty or missing")
-                    
-                    cap = cv2.VideoCapture(str(video_path))
+                    path = temp_dir / f"video_{datetime.now().timestamp()}.mp4"
+                    path.write_bytes(resp.content)
+                    if not path.exists() or path.stat().st_size == 0:
+                        raise ValueError("Video is empty/missing")
+
+                    cap = cv2.VideoCapture(str(path))
                     if not cap.isOpened():
                         cap.release()
-                        video_path.unlink(missing_ok=True)
-                        raise ValueError("Downloaded file is not a valid video")
-                        
+                        path.unlink(missing_ok=True)
+                        raise ValueError("Not a valid video")
                     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                     fps = cap.get(cv2.CAP_PROP_FPS)
                     cap.release()
-                    
                     logger.info(f"Video stats: {frame_count} frames, {fps} FPS")
-                    
-                    self._video_cache[video_url] = video_path
-                    return video_path
-                    
+                    self._video_cache[video_url] = path
+                    return path
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logger.warning(f"Download attempt {attempt + 1} failed: {str(e)}. Retrying in {retry_delay} seconds...")
+                    logger.warning(f"Attempt {attempt+1} failed: {str(e)}. Retrying...")
                     await asyncio.sleep(retry_delay)
-                    continue
                 else:
                     logger.error(f"All download attempts failed: {str(e)}")
-                    if 'video_path' in locals() and video_path.exists():
-                        video_path.unlink()
-                    raise ValueError(f"Failed to download video: {str(e)}")
-                    
-            finally:
-                if 'cap' in locals():
-                    cap.release()
+                    if 'path' in locals() and path.exists():
+                        path.unlink()
+                    raise ValueError(f"Failed to download: {str(e)}")
 
     async def validate_keypoints(self, frame: np.ndarray, keypoints: list, frame_idx: int) -> float:
-        """Validate keypoints with GPT-4V."""
-        # Create visualization
-        keypoint_frame = frame.copy()
-        for point in keypoints:
-            if point[0] != 0 and point[1] != 0:
-                cv2.circle(keypoint_frame, (int(point[0]), int(point[1])), 5, COLORS["keypoint"], -1)
-        
-        # Prepare images
-        reference_path = Path(__file__).parent / "pitch-keypoints.jpg"
-        reference_image = cv2.imread(str(reference_path))
-        
-        success, ref_buffer = cv2.imencode('.jpg', reference_image)
-        success, kp_buffer = cv2.imencode('.jpg', keypoint_frame)
-        
-        if not success:
+        """
+        Validate keypoints. Attempts Chutes first, then OpenAI fallback.
+        Expects a numeric score from 0.0 to 1.0.
+        """
+        kp_frame = frame.copy()
+        for (x, y) in keypoints:
+            if x != 0 and y != 0:
+                cv2.circle(kp_frame, (int(x), int(y)), 5, COLORS["keypoint"], -1)
+
+        ref_path = Path(__file__).parent / "pitch-keypoints.jpg"
+        ref_img = cv2.imread(str(ref_path))
+
+        success_ref, ref_buf = cv2.imencode('.jpg', ref_img)
+        success_kp, kp_buf = cv2.imencode('.jpg', kp_frame)
+        if not (success_ref and success_kp):
             return 0.0
-        
-        ref_base64 = base64.b64encode(ref_buffer).decode('utf-8')
-        kp_base64 = base64.b64encode(kp_buffer).decode('utf-8')
-        
+
+        ref_b64 = base64.b64encode(ref_buf).decode('utf-8')
+        kp_b64 = base64.b64encode(kp_buf).decode('utf-8')
+
+        text_prompt = (
+            "Here are two images:\n1) Reference pitch keypoints.\n2) Predicted keypoints.\n"
+            "Rate similarity from 0.0 (bad) to 1.0 (perfect). Return only the numeric value."
+        )
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "I will show you two images:\n"
-                            "1. A reference image showing the correct keypoint placements on a soccer field.\n"
-                            "2. A prediction image showing keypoints placed on a similar field.\n\n"
-                            "The keypoints (pink dots) must mark:\n"
-                            "- Corners of the pitch\n"
-                            "- Penalty spots\n"
-                            "- Center spot, center circle intersections\n"
-                            "- Intersections for 18-yard boxes\n\n"
-                            "Rate how accurately the predicted keypoints match the reference image keypoints on a scale from 0.0 to 1.0, "
-                            "with 1.0 meaning perfectly placed.\n\n"
-                            "Criteria:\n"
-                            "- If every keypoint is within 5% positional error (based on field dimensions), the score should be around 0.95.\n"
-                            "- If keypoints are very far off (more than 10% error), the score should be around 0.3 or lower.\n"
-                            "- For minor but noticeable errors (around 5-10% off), scale the score proportionally (0.5 to 0.8 range).\n\n"
-                            "The response should be ONLY the numeric score, no additional text.\n"
-                        )
-                    },
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ref_base64}"}},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{kp_base64}"}}
+                    {"type": "text", "text": text_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ref_b64}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{kp_b64}"}}
                 ]
             }
         ]
-        
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                max_tokens=10
-            )
-            
-            # Log token usage
-            # if hasattr(response, 'usage'):
-            #     logger.info(f"Frame {frame_idx} keypoint validation token usage:")
-            #     logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
-            #     logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
-            #     logger.info(f"  - Total tokens: {response.usage.total_tokens}")
-            
-            score_text = response.choices[0].message.content.strip()
-            try:
-                score = float(score_text)
-                return max(0.0, min(1.0, score))
-            except ValueError:
-                logger.error(f"Failed to parse keypoint score: {score_text}")
+            content = await self.ask_vlm(messages, max_tokens=10)
+            if not content:
                 return 0.0
-                
+            content = self.clean_json_response(content)
+            return max(0.0, min(1.0, float(content)))
         except Exception as e:
-            logger.error(f"Error in keypoint validation: {str(e)}")
+            logger.error(f"Keypoint validation error: {str(e)}")
             return 0.0
 
     def resize_frame(self, frame: np.ndarray, target_width: int = 400) -> np.ndarray:
-        """Resize frame maintaining aspect ratio."""
-        height, width = frame.shape[:2]
-        aspect = width / height
-        target_height = int(target_width / aspect)
-        return cv2.resize(frame, (target_width, target_height))
+        """Keep aspect ratio on resize."""
+        h, w = frame.shape[:2]
+        aspect = w / h
+        return cv2.resize(frame, (target_width, int(target_width / aspect)))
 
     async def evaluate_response(
-        self, 
-        response: GSRResponse, 
+        self,
+        response: GSRResponse,
         challenge: GSRChallenge,
-        video_path: Path
+        video_path: Path,
+        frame_cache: Dict = None,
+        frames_to_validate: List[int] = None
     ) -> ValidationResult:
-        """Evaluate a GSR response"""
-        try:
-            if not hasattr(response, 'response_id') or response.response_id is None:
-                logger.error("Response object missing response_id")
-                raise ValueError("Response object must have response_id set")
-            
-            if not hasattr(response, 'node_id') or response.node_id is None:
-                logger.error("Response object missing node_id")
-                raise ValueError("Response object must have node_id set")
-                
-            # Select random frames to evaluate
-            chosen_frames = self.select_random_frames(video_path)
-            logger.info(f"Selected {len(chosen_frames)} frames for validation: {chosen_frames}")
-            
-            # Create debug frames directory with date-based subdirectory
-            current_date = datetime.now().strftime("%Y%m%d")
-            debug_dir = Path("debug_frames") / current_date
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Prepare frame evaluation tasks
-            frame_tasks = []
-            for frame_num in chosen_frames:
-                cap = cv2.VideoCapture(str(video_path))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                ret, frame = cap.read()
-                cap.release()
-                
-                if not ret:
-                    logger.error(f"Failed to read frame {frame_num}")
-                    continue
-                
-                frame_data = response.frames.get(str(frame_num), {})
-                
-                # Create task for parallel processing
-                task = asyncio.create_task(self.validate_frame_detections(frame, frame_data, frame_num))
-                frame_tasks.append((frame_num, frame, frame_data, task))
-            
-            # Process all frames in parallel
-            frame_evaluations = []
-            for frame_num, frame, frame_data, task in frame_tasks:
-                try:
-                    evaluation = await task
-                    
-                    # Save annotated frame with new naming convention
-                    annotated_frame = self.draw_annotations(frame, frame_data)
-                    # Resize frame
-                    annotated_frame = self.resize_frame(annotated_frame, target_width=400)
-                    
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    debug_path = debug_dir / f"challenge_{challenge.challenge_id}_node_{response.node_id}_frame_{frame_num}_{timestamp}.jpg"
-                    cv2.imwrite(str(debug_path), annotated_frame)
-                    
-                    evaluation['frame_number'] = frame_num
-                    frame_evaluations.append(evaluation)
-                    
-                    # Store frame evaluation in database
-                    if hasattr(self, 'db_manager'):
-                        self.db_manager.store_frame_evaluation(
-                            response_id=response.response_id,
-                            challenge_id=challenge.challenge_id,
-                            miner_hotkey=response.miner_hotkey,
-                            node_id=response.node_id,
-                            frame_id=frame_num,
-                            frame_timestamp=frame_num / 30.0,  # Assuming 30fps
-                            frame_score=evaluation["scores"]["final_score"],
-                            raw_frame_path="",  # No longer saving raw frames
-                            annotated_frame_path=str(debug_path),
-                            vlm_response=evaluation["count_validation"]["reference_counts"],
-                            feedback=""
-                        )
-                except Exception as e:
-                    logger.error(f"Error processing frame {frame_num}: {str(e)}")
-                    logger.exception("Full error traceback:")
-            
-            if not frame_evaluations:
-                logger.error("No frames were successfully evaluated")
-                return ValidationResult(
-                    score=0.0,
-                    frame_scores={},
-                    feedback="Failed to evaluate any frames successfully"
-                )
-            
-            # Process evaluations
-            scores = []
-            frame_scores = {}
-            
-            for eval_data in frame_evaluations:
-                frame_num = eval_data["frame_number"]
-                score = eval_data["scores"]["final_score"]
-                scores.append(score)
-                frame_scores[frame_num] = score
-            
-            # Calculate final score
-            avg_score = sum(scores) / len(scores) if scores else 0.0
-            
-            logger.info(f"Validation complete. Average score: {avg_score:.3f}")
-            return ValidationResult(
-                score=avg_score,
-                frame_scores=frame_scores,
-                feedback=""
-            )
-            
-        except Exception as e:
-            error_msg = f"Error evaluating response {response.challenge_id}: {str(e)}"
-            logger.error(error_msg)
+        """
+        Main entry to evaluate a GSR response.
+        """
+        if not getattr(response, 'response_id', None):
+            raise ValueError("response_id is required")
+        
+        node_id = getattr(response, 'node_id', None)
+        if node_id is None:
+            raise ValueError("node_id is required")
+
+        # Use provided frames or select new ones
+        if frames_to_validate is None:
+            frames_to_validate = self.select_random_frames(video_path)
+        logger.info(f"Evaluating frames: {frames_to_validate}")
+
+        tasks = []
+        for frame_idx in frames_to_validate:
+            try:
+                # Use cached frame and reference counts if available
+                if frame_cache and frame_idx in frame_cache:
+                    frame = frame_cache[frame_idx]['frame']
+                    ref_counts = frame_cache[frame_idx].get('reference_counts')
+                else:
+                    # Read frame from video
+                    cap = cv2.VideoCapture(str(video_path))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    cap.release()
+                    if not ret:
+                        logger.error(f"Failed to read frame {frame_idx}")
+                        continue
+                    ref_counts = None
+
+                frame_data = response.frames.get(str(frame_idx), {})
+                tasks.append((frame_idx, asyncio.create_task(
+                    self.validate_frame_detections(
+                        frame=frame,
+                        detections=frame_data,
+                        frame_idx=frame_idx,
+                        challenge_id=challenge.challenge_id,
+                        node_id=response.node_id,
+                        reference_counts=ref_counts,
+                        response_id=response.response_id
+                    )
+                )))
+            except Exception as e:
+                logger.error(f"Error preparing frame {frame_idx}: {str(e)}")
+
+        frame_evals = []
+        for frame_idx, task in tasks:
+            try:
+                data = await task
+                data["frame_number"] = frame_idx
+                frame_evals.append(data)
+                # Store in DB
+                if self.db_manager:
+                    scores = data["scores"]
+                    feed = {
+                        "scores": {
+                            "keypoint_score": scores["keypoint_score"],
+                            "bbox_score": scores["bbox_score"],
+                            "count_match_score": scores["count_match_score"]
+                        },
+                        "reference_counts": data["count_validation"]["reference_counts"],
+                        "detected_counts": data["count_validation"]["high_confidence_counts"],
+                        "count_matches": data["count_validation"]["count_matches"]
+                    }
+                    self.db_manager.store_frame_evaluation(
+                        response_id=response.response_id,
+                        challenge_id=challenge.challenge_id,
+                        miner_hotkey=response.miner_hotkey,
+                        node_id=response.node_id,
+                        frame_id=frame_idx,
+                        frame_timestamp=frame_idx / 30.0,  # assume 30fps
+                        frame_score=scores["final_score"],
+                        raw_frame_path="",
+                        annotated_frame_path=data["debug_frame_path"],
+                        vlm_response=data["count_validation"]["reference_counts"],
+                        feedback=json.dumps(feed)
+                    )
+            except Exception as e:
+                logger.error(f"Error evaluating frame {frame_idx}: {str(e)}")
+
+        if not frame_evals:
             return ValidationResult(
                 score=0.0,
                 frame_scores={},
-                feedback=error_msg
+                feedback="No frames evaluated successfully."
             )
 
-    async def evaluate_frame(
-        self,
-        frame_number: int,
-        frame: np.ndarray,
-        frame_data: dict,
-        challenge: GSRChallenge,
-        response: GSRResponse
-    ) -> float:
-        """
-        Evaluate a single frame of the response.
-        """
-        reference_counts = self.get_reference_counts(frame)
-        
-        filtered_detections = self.filter_detections(frame_data, frame.shape)
-        
-        bbox_score = self.evaluate_bboxes(frame, filtered_detections.get("objects", []))
-        keypoint_score = await self.validate_keypoints(frame, filtered_detections.get("keypoints", []), frame_number)
-        
-        count_validation = self.compare_with_reference_counts(reference_counts, filtered_detections)
-        
-        frame_score = self.calculate_final_score(
-            keypoint_score=keypoint_score,
-            bbox_score=bbox_score,
-            count_match_score=count_validation["match_score"]
-        )
-        
-        # Store frame evaluation in DB if available
-        if self.db_manager and response.response_id:
-            self.db_manager.store_frame_evaluation(
-                response_id=response.response_id,
-                challenge_id=challenge.challenge_id,
-                miner_hotkey=response.miner_hotkey,
-                node_id=response.node_id,
-                frame_id=frame_number,
-                frame_timestamp=frame_number / 30.0,  # Assuming 30fps
-                frame_score=frame_score,
-                raw_frame_path="",
-                annotated_frame_path="",
-                vlm_response=reference_counts,
-                feedback=""
-            )
-        
-        return frame_score
-    
-    def get_reference_counts(self, frame: np.ndarray) -> Dict:
-        """Get reference counts of objects in frame using VLM"""
-        encoded = self.encode_image(frame)
-        
-        messages = [
-            {"role": "system", "content": "You are an expert at counting objects in soccer match frames."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": COUNT_PROMPT},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"}}
-                ]
-            }
-        ]
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                max_tokens=500,
-                temperature=0.2
-            )
-            
-            # Log token usage
-            # if hasattr(response, 'usage'):
-            #     logger.info(f"Reference count token usage:")
-            #     logger.info(f"  - Prompt tokens: {response.usage.prompt_tokens}")
-            #     logger.info(f"  - Completion tokens: {response.usage.completion_tokens}")
-            #     logger.info(f"  - Total tokens: {response.usage.total_tokens}")
-            
-            content = response.choices[0].message.content.strip()
-            
-            if content.startswith('```json'):
-                content = content[7:]
-            if content.endswith('```'):
-                content = content[:-3]
-            content = content.strip()
-            
-            try:
-                result = json.loads(content)
-                logger.info(f"Reference counts: {result}")
-                return result
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {content}")
-                logger.error(f"JSON parse error: {str(e)}")
-                return None
-            
-        except Exception as e:
-            logger.error(f"Error getting reference counts: {str(e)}")
-            return None
+        # Gather results
+        total_scores, frame_scores, details = [], {}, []
+        for item in frame_evals:
+            frm_num = item["frame_number"]
+            final_score = item["scores"]["final_score"]
+            total_scores.append(final_score)
+            frame_scores[frm_num] = final_score
+            details.append({
+                "frame_number": frm_num,
+                "debug_frame_path": item["debug_frame_path"],
+                "scores": item["scores"],
+                "scoring_details": item["scoring_details"]
+            })
 
-    def filter_detections(self, detections: Dict, frame_shape: Tuple[int, int]) -> Dict:
-        """
-        Filter and validate detections early in the pipeline.
-        """
-        filtered = {
-            "objects": [],
-            "keypoints": detections.get("keypoints", [])
+        avg_score = sum(total_scores) / len(total_scores) if total_scores else 0.0
+        summary = {
+            "node_id": response.node_id,
+            "challenge_id": challenge.challenge_id,
+            "average_score": avg_score,
+            "frame_count": len(frame_evals),
+            "frame_details": [
+                {
+                    "frame_number": d["frame_number"],
+                    "debug_frame_path": d["debug_frame_path"],
+                    "scores": d["scores"]
+                } for d in details
+            ]
         }
-        
-        # Filter objects
+        logger.info(f"Validation Results:\n{json.dumps(summary, indent=2)}")
+
+        return ValidationResult(
+            score=avg_score,
+            frame_scores=frame_scores,
+            feedback=details
+        )
+
+    # async def evaluate_frame(
+    #     self,
+    #     frame_number: int,
+    #     frame: np.ndarray,
+    #     frame_data: dict,
+    #     challenge: GSRChallenge,
+    #     response: GSRResponse
+    # ) -> float:
+    #     """
+    #     Evaluate one frame's data. (Kept for reference or modular usage.)
+    #     """
+    #     ref_counts = await self.get_reference_counts(frame)
+    #     filtered = self.filter_detections(frame_data, frame.shape)
+    #     bbox_score = await self.evaluate_bboxes(frame, filtered.get("objects", []))
+    #     kpt_score = await self.validate_keypoints(frame, filtered.get("keypoints", []), frame_number)
+    #     count_val = self.compare_with_reference_counts(ref_counts, {"objects": [], "keypoints": []})
+    #     return self.calculate_final_score(kpt_score, bbox_score, count_val["match_score"])
+
+    def filter_detections(self, detections: Dict, shape: Tuple[int, int]) -> Dict:
+        """Clamp bboxes, keep valid ones, preserve keypoints."""
+        valid = {"objects": [], "keypoints": detections.get("keypoints", [])}
         for obj in detections.get("objects", []):
-            bbox = self.validate_bbox_coordinates(obj["bbox"], frame_shape, obj["class_id"])
+            bbox = self.validate_bbox_coordinates(obj["bbox"], shape, obj["class_id"])
             if bbox:
-                filtered["objects"].append({
-                    **obj,
-                    "bbox": bbox
-                })
-            else:
-                logger.debug(f"Filtered out object: {obj}")
-        
-        logger.debug(f"Filtered {len(detections.get('objects', []))} objects to {len(filtered['objects'])}")
-        return filtered
+                valid["objects"].append({**obj, "bbox": bbox})
+        return valid
 
-    def validate_bbox_content(self, image: np.ndarray, expected_class: str) -> float:
-        """Validate bbox content with GPT-4V."""
-        success, buffer = cv2.imencode('.jpg', image)
-        if not success:
+    async def validate_bbox_content(self, image: np.ndarray, expected_class: str) -> float:
+        """
+        Validate a single bounding box. Returns probability (0.0..1.0) that
+        the cropped image contains the class in question.
+        """
+        ok, buf = cv2.imencode('.jpg', image)
+        if not ok:
             return 0.0
-        
-        image_base64 = base64.b64encode(buffer).decode('utf-8')
-        
+        b64 = base64.b64encode(buf).decode('utf-8')
+        prompt = (
+            f"This image supposedly has a {expected_class} in a soccer context. "
+            "Rate probability [0.0..1.0]. Return only the numeric probability."
+        )
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": f"This image is supposed to contain a {expected_class} from a soccer game. "
-                               f"On a scale of 0.0 to 1.0, what is the probability that this image contains "
-                               f"a {expected_class}? Respond with ONLY the numerical probability."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    }
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 ]
             }
         ]
-        
+        content = await self.ask_vlm(messages, max_tokens=10)
+        if not content:
+            return 0.0
+        content = self.clean_json_response(content)
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages,
-                max_tokens=10
-            )
-            
-            probability_text = response.choices[0].message.content.strip()
-            try:
-                probability = float(probability_text)
-                return max(0.0, min(1.0, probability))
-            except ValueError:
-                logger.error(f"Failed to parse probability: {probability_text}")
-                return 0.0
-                
-        except Exception as e:
-            logger.error(f"Error in bbox validation: {str(e)}")
+            return max(0.0, min(1.0, float(content)))
+        except ValueError:
             return 0.0
 
-    def calculate_bbox_confidence_score(self, validation_results: dict) -> float:
-        """Calculate the overall bounding box confidence score."""
-        if not validation_results["objects"]:
+    def calculate_bbox_confidence_score(self, results: dict) -> float:
+        """
+        Weighted average of all object validation scores (0..1).
+        Different classes get different weighting.
+        """
+        objs = results.get("objects", [])
+        if not objs:
             return 0.0
-            
-        total_score = 0.0
-        total_weight = 0.0
-        
-        # Weights for different object types
+
+        total, weight_sum = 0.0, 0.0
         weights = {
-            "soccer ball": 0.7,  # Critical for game analysis
-            "goalkeeper": 0.3,   # Important but less common
-            "referee": 0.2,      # Common
-            "soccer player": 1.0  # Critical for game analysis
+            "soccer ball": 0.7,
+            "goalkeeper": 0.3,
+            "referee": 0.2,
+            "soccer player": 1.0
         }
-        
-        # Calculate weighted average of object scores
-        for obj in validation_results["objects"]:
-            class_name = obj["class"]
-            probability = obj["probability"]
-            weight = weights.get(class_name, 0.5)
-            
-            total_score += probability * weight
-            total_weight += weight
-            
-            # Log individual object score
-            #logger.info(f"Bbox score for {class_name}: {probability:.3f} (weight: {weight})")
-            
-        if total_weight == 0:
-            return 0.0
-            
-        final_bbox_score = total_score / total_weight
-        logger.info(f"Final weighted bbox score: {final_bbox_score:.3f}")
-        return final_bbox_score
-        
-    def calculate_final_score(
-        self,
-        keypoint_score: float,
-        bbox_score: float,
-        count_match_score: float
-    ) -> float:
-        """Calculate final frame score combining all components."""
-        # Weights for different components
-        KEYPOINT_WEIGHT = 0.4    # Keypoints are critical for pose estimation
-        BBOX_WEIGHT = 0.4        # Object detection accuracy is equally important
-        COUNT_WEIGHT = 0.2       # Count matching provides validation but less critical
-        
-        final_score = (
-            keypoint_score * KEYPOINT_WEIGHT +
-            bbox_score * BBOX_WEIGHT +
-            count_match_score * COUNT_WEIGHT
-        )
-        
-        logger.info("Final score calculation:")
-        logger.info(f"  - Keypoint score: {keypoint_score:.3f} * {KEYPOINT_WEIGHT}")
-        logger.info(f"  - Bbox score: {bbox_score:.3f} * {BBOX_WEIGHT}")
-        logger.info(f"  - Count match score: {count_match_score:.3f} * {COUNT_WEIGHT}")
-        logger.info(f"  = Final score: {final_score:.3f}")
-        
-        return final_score
+        for o in objs:
+            cls_name = o["class"]
+            prob = o["probability"]
+            w = weights.get(cls_name, 0.5)
+            total += prob * w
+            weight_sum += w
+        return total / weight_sum if weight_sum else 0.0
 
-    def compare_with_reference_counts(self, reference_counts: Dict[str, int], validation_results: Dict) -> Dict:
-        """Compare high-confidence detections with reference counts."""
-        high_confidence_counts = {
+    def calculate_final_score(self, keypoint_score: float, bbox_score: float, count_match: float) -> float:
+        """
+        Combine keypoints, bboxes, and object counts into final 0..1.
+        """
+        KEY_W, BOX_W, CNT_W = 0.4, 0.4, 0.2
+        return (
+            (keypoint_score * KEY_W) +
+            (bbox_score * BOX_W) +
+            (count_match * CNT_W)
+        )
+
+    def compare_with_reference_counts(self, ref_counts: Dict[str, int], results: Dict) -> Dict:
+        """
+        Compare the number of high-confidence detections vs. reference counts.
+        Returns normalized match scores per class and overall match score.
+        """
+        # Normalize reference counts first
+        normalized_ref = {
             "player": 0,
             "goalkeeper": 0,
             "referee": 0,
             "ball": 0
         }
         
-        # Count high-confidence objects by type
-        for obj in validation_results.get("objects", []):
-            if obj.get("probability", 0) >= 0.9:
-                if obj.get("class_id") == BALL_CLASS_ID:
-                    high_confidence_counts["ball"] += 1
-                elif obj.get("class_id") == GOALKEEPER_CLASS_ID:
-                    high_confidence_counts["goalkeeper"] += 1
-                elif obj.get("class_id") == REFEREE_CLASS_ID:
-                    high_confidence_counts["referee"] += 1
-                else:  # regular player
-                    high_confidence_counts["player"] += 1
-        
-        logger.info(f"Reference counts: {reference_counts}")
-        logger.info(f"High confidence counts: {high_confidence_counts}")
-        
-        # Calculate match percentages
-        count_matches = {
-            "player": min(high_confidence_counts["player"], reference_counts["player"]) / max(reference_counts["player"], 1),
-            "goalkeeper": min(high_confidence_counts["goalkeeper"], reference_counts["goalkeeper"]) / max(reference_counts["goalkeeper"], 1),
-            "referee": min(high_confidence_counts["referee"], reference_counts["referee"]) / max(reference_counts["referee"], 1),
-            "ball": min(high_confidence_counts["ball"], reference_counts.get("soccer ball", 0)) / max(reference_counts.get("soccer ball", 0), 1)
+        if ref_counts:
+            for key, value in ref_counts.items():
+                key = key.lower()
+                if isinstance(value, (int, float)):
+                    if "ball" in key or "soccer ball" in key:
+                        normalized_ref["ball"] = int(value)
+                    elif "goalkeeper" in key:
+                        normalized_ref["goalkeeper"] = int(value)
+                    elif "referee" in key:
+                        normalized_ref["referee"] = int(value)
+                    elif "player" in key:
+                        normalized_ref["player"] = int(value)
+
+        # Count high confidence detections (prob >= 0.7)
+        high_conf = {
+            "player": 0,
+            "goalkeeper": 0,
+            "referee": 0,
+            "ball": 0
         }
-        
-        # Calculate overall match score
-        total_weight = sum([
-            reference_counts["player"],
-            reference_counts["goalkeeper"],
-            reference_counts["referee"],
-            reference_counts.get("soccer ball", 0)
-        ])
-        
-        if total_weight == 0:
-            match_score = 0.0
-        else:
-            weighted_scores = [
-                count_matches["player"] * reference_counts["player"],
-                count_matches["goalkeeper"] * reference_counts["goalkeeper"],
-                count_matches["referee"] * reference_counts["referee"],
-                count_matches["ball"] * reference_counts.get("soccer ball", 0)
-            ]
-            match_score = sum(weighted_scores) / total_weight
-        
-        logger.info(f"Count matches: {count_matches}")
-        logger.info(f"Overall match score: {match_score:.3f}")
-        
+
+        for obj in results.get("objects", []):
+            if obj.get("probability", 0) >= 0.7:
+                cls = obj["class"].lower()
+                if "ball" in cls:
+                    high_conf["ball"] += 1
+                elif "goalkeeper" in cls:
+                    high_conf["goalkeeper"] += 1
+                elif "referee" in cls:
+                    high_conf["referee"] += 1
+                elif "player" in cls:
+                    high_conf["player"] += 1
+
+        # Calculate match scores with importance weights
+        weights = {
+            "player": 0.4,    # Players are most important
+            "goalkeeper": 0.3, # Goalkeeper is important for team composition
+            "referee": 0.2,   # Referee is less critical but should be counted
+            "ball": 0.1      # Ball count is least important (usually just 1)
+        }
+
+        matches = {}
+        weighted_sum = 0
+        total_weight = 0
+
+        for cls in ["player", "goalkeeper", "referee", "ball"]:
+            ref = normalized_ref[cls]
+            detected = high_conf[cls]
+            
+            # Calculate match score for this class
+            if ref == 0 and detected == 0:
+                matches[cls] = 1.0  # Perfect match when both are 0
+            elif ref == 0:
+                matches[cls] = 0.0  # Penalize false positives
+            else:
+                # Calculate ratio and apply penalties
+                ratio = min(detected, ref) / ref
+                # Penalize overcounting more than undercounting
+                if detected > ref:
+                    excess = (detected - ref) / ref
+                    penalty = min(1.0, excess * 0.5)  # 50% penalty per excess count
+                    ratio = max(0.0, ratio - penalty)
+                matches[cls] = max(0.0, min(1.0, ratio))
+
+            weight = weights[cls]
+            weighted_sum += matches[cls] * weight
+            total_weight += weight
+
+        # Calculate final match score
+        match_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+
+        # Log detailed information for debugging
+        logger.info("Count matching details:")
+        logger.info(f"Reference counts: {normalized_ref}")
+        logger.info(f"Detected counts: {high_conf}")
+        logger.info(f"Individual matches: {matches}")
+        logger.info(f"Final match score: {match_score}")
+
         return {
-            "reference_counts": reference_counts,
-            "high_confidence_counts": high_confidence_counts,
-            "count_matches": count_matches,
+            "reference_counts": normalized_ref,
+            "high_confidence_counts": high_conf,
+            "count_matches": matches,
             "match_score": match_score
         }
 
     def select_random_frames(self, video_path: Path, num_frames: int = None) -> List[int]:
-        """Select random frames from video"""
-        if num_frames is None:
-            num_frames = FRAMES_TO_VALIDATE
-            
+        """
+        Randomly pick frames from a video, skipping start/end buffer.
+        """
+        num_frames = num_frames or FRAMES_TO_VALIDATE
         cap = cv2.VideoCapture(str(video_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        
-        # Select random frames, ensuring they're not too close to start/end
-        buffer = min(30, total_frames // 10)  # 10% or 30 frames buffer
-        frame_range = range(buffer, total_frames - buffer)
-        frames = random.sample(frame_range, min(num_frames, len(frame_range)))
-        frames.sort()  # Keep frames in order
-        return frames
 
-    def extract_frame(self, video_path: Path, frame_num: int) -> np.ndarray:
-        """Extract a single frame from the video file."""
-        cap = cv2.VideoCapture(str(video_path))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret:
-            raise ValueError(f"Unable to extract frame {frame_num}")
-        return frame
-
-    def filter_detections(self, detections: Dict, frame_shape: Tuple[int, int]) -> Dict:
-        """
-        Filter out invalid bounding boxes and keep only valid keypoints.
-        """
-        filtered = {
-            "objects": [],
-            "keypoints": detections.get("keypoints", [])
-        }
-        
-        for obj in detections.get("objects", []):
-            bbox = self.validate_bbox_coordinates(obj["bbox"], frame_shape, obj["class_id"])
-            if bbox:
-                filtered["objects"].append({**obj, "bbox": bbox})
-        
-        return filtered
-
-    def evaluate_bboxes(self, frame: np.ndarray, objects: List[Dict]) -> float:
-        """Evaluate bounding boxes for a frame."""
-        if not objects:
-            return 0.0
-        
-        total_score = 0.0
-        for obj in objects:
-            bbox = obj["bbox"]
-            class_id = obj["class_id"]
-            expected_class = self.get_class_name(class_id)
-            
-            cropped = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-            score = self.validate_bbox_content(cropped, expected_class)
-            total_score += score
-        
-        return total_score / len(objects)
-
-    def get_class_name(self, class_id: int) -> str:
-        """Get the class name for a given class ID."""
-        class_names = {
-            0: "soccer ball",
-            1: "goalkeeper",
-            2: "player",
-            3: "referee"
-        }
-        return class_names.get(class_id, "unknown")
-
-    def validate_bbox_coordinates(self, bbox: List[float], frame_shape: Tuple[int, int], class_id: int) -> Optional[List[int]]:
-        """
-        Clamp bounding box coords to frame and discard invalid ones.
-        Returns None if invalid or out-of-bounds.
-        """
-        try:
-            height, width = frame_shape[:2]
-            x1, y1, x2, y2 = map(int, bbox)
-            
-            # Basic sanity checks
-            if x2 <= x1 or y2 <= y1:
-                return None
-            
-            # Clamp
-            x1 = max(0, min(x1, width))
-            y1 = max(0, min(y1, height))
-            x2 = max(0, min(x2, width))
-            y2 = max(0, min(y2, height))
-            
-            # Minimum size checks
-            if class_id == 0:  # Ball can be smaller
-                if (x2 - x1) < 1 or (y2 - y1) < 1:
-                    return None
-            else:
-                # Slightly bigger minimum for players/refs
-                if (x2 - x1) < 5 or (y2 - y1) < 5:
-                    return None
-            
-            return [x1, y1, x2, y2]
-        except Exception as e:
-            logger.error(f"Error validating bbox coordinates: {str(e)}")
-            return None
+        buffer = min(30, total // 10)
+        frange = range(buffer, max(buffer, total - buffer))
+        frames = random.sample(frange, min(num_frames, len(frange))) if frange else []
+        return sorted(frames)
 
     def encode_image(self, image):
-        """Encode an image to base64 string."""
-        _, buffer = cv2.imencode('.jpg', image)
-        return base64.b64encode(buffer).decode('utf-8')
+        """Base64-encode an image."""
+        ok, buf = cv2.imencode('.jpg', image)
+        return base64.b64encode(buf).decode('utf-8') if ok else ""
+
+    async def validate_bbox_content_batch(self, images: List[np.ndarray], expected: str) -> List[float]:
+        """
+        Validate multiple bounding boxes in one call with rate limiting.
+        """
+        if not images:
+            return []
+
+        batch_size = min(len(images), VLM_BATCH_SIZE)
+        batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
+        
+        all_probabilities = []
+        current_index = 0
+
+        for batch in batches:
+            await self.rate_limiter.acquire()
+            try:
+                # Modified prompt to be more explicit about response format
+                content_list = [
+                    {
+                        "type": "text",
+                        "text": (
+                            "You are analyzing multiple bounding boxes from a soccer match frame.\n"
+                            f"For each box, determine if it contains a {expected}.\n"
+                            "CRITICAL: Respond with a single JSON array containing ONLY probability values [0..1].\n"
+                            "Example response for 3 boxes: [0.95, 0.82, 0.1]\n"
+                            f"Now analyzing {len(batch)} boxes:"
+                        )
+                    }
+                ]
+                
+                # Add individual box prompts
+                for i in range(len(batch)):
+                    content_list.append({
+                        "type": "text",
+                        "text": f"Box {i+1}/{len(batch)}: Determine probability [0..1] that this contains a {expected}."
+                    })
+                
+                messages = [{"role": "user", "content": content_list}]
+                
+                # Add images
+                for img in batch:
+                    ok, buf = cv2.imencode('.jpg', img)
+                    if not ok:
+                        continue
+                    b64 = base64.b64encode(buf).decode('utf-8')
+                    messages[0]["content"].append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                    })
+
+                api_response = await self.ask_vlm(messages, max_tokens=100)
+                
+                if not api_response:
+                    all_probabilities.extend([0.0] * len(batch))
+                    current_index += len(batch)
+                    continue
+
+                # Enhanced parsing logic
+                try:
+                    # Clean and parse the response
+                    cleaned = self.clean_json_response(api_response)
+                    
+                    # Try parsing as a JSON array first
+                    try:
+                        probabilities = json.loads(cleaned)
+                        if isinstance(probabilities, list):
+                            parsed_probs = []
+                            for p in probabilities:
+                                if isinstance(p, (int, float)):
+                                    parsed_probs.append(max(0.0, min(1.0, float(p))))
+                                else:
+                                    parsed_probs.append(0.0)
+                            all_probabilities.extend(parsed_probs)
+                            continue
+                    except json.JSONDecodeError:
+                        pass
+                    
+                    # Fallback: try to extract numbers from the response
+                    import re
+                    numbers = re.findall(r'0\.\d+|\d+\.?\d*', cleaned)
+                    if numbers:
+                        parsed_probs = [max(0.0, min(1.0, float(n))) for n in numbers[:len(batch)]]
+                        all_probabilities.extend(parsed_probs)
+                    else:
+                        all_probabilities.extend([0.0] * len(batch))
+                        
+                except Exception as e:
+                    logger.error(f"Batch parse error: {str(e)}")
+                    all_probabilities.extend([0.0] * len(batch))
+                    
+            except Exception as e:
+                logger.error(f"Batch validation error: {str(e)}")
+                all_probabilities.extend([0.0] * len(batch))
+
+            current_index += len(batch)
+            await asyncio.sleep(0.1)
+
+        # Ensure we return exactly len(images) probabilities
+        return all_probabilities[:len(images)]
 
     async def validate_frame_detections(
         self,
         frame: np.ndarray,
         detections: dict,
-        frame_idx: int
+        frame_idx: int,
+        challenge_id: str,
+        node_id: int,
+        reference_counts: Dict = None,
+        response_id: str = None
     ) -> dict:
-        """Validate all detections in a frame concurrently."""
-        # Get reference counts first
-        reference_counts = self.get_reference_counts(frame)
-        
-        # Filter detections early
-        filtered_detections = self.filter_detections(detections, frame.shape)
-        
-        validation_results = {
+        """
+        Validate detections in a single frame with timeout protection.
+        """
+        # Initialize results with default values
+        results = {
             "objects": [],
             "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
-            "scores": {"keypoint_score": 0.0, "bbox_score": 0.0, "final_score": 0.0}
+            "scores": {
+                "keypoint_score": 0.0,
+                "bbox_score": 0.0,
+                "count_match_score": 0.0,
+                "final_score": 0.0
+            },
+            "debug_frame_path": "",
+            "timing": {}
         }
-        
+
         try:
-            # Validate keypoints
-            keypoints = filtered_detections.get("keypoints", [])
-            keypoint_score = await self.validate_keypoints(frame, keypoints, frame_idx)
-            logger.info(f"Frame {frame_idx} keypoint validation score: {keypoint_score:.3f}")
-            
-            validation_results["keypoints"].update({
-                "score": keypoint_score,
-                "points": keypoints,
-                "visualization_path": f"frame_{frame_idx}_keypoints.jpg"
-            })
-            
-            # Validate objects
-            object_scores = []
-            for i, obj in enumerate(filtered_detections.get("objects", [])):
-                bbox = obj["bbox"]
-                class_id = obj["class_id"]
+            async def _process_frame():
+                start = datetime.now()
+                logger.info(f"Validating frame {frame_idx} (challenge {challenge_id}, node {node_id})")
+
+                # Run validations concurrently
+                filtered = self.filter_detections(detections, frame.shape)
+                kpts = filtered.get("keypoints", [])
+                kpt_score_task = self.validate_keypoints(frame, kpts, frame_idx)
+
+                # Process objects first
+                class_map = {}
+                for obj in filtered.get("objects", []):
+                    cls = self.get_class_name(obj["class_id"])
+                    x1, y1, x2, y2 = obj["bbox"]
+                    crop = frame[y1:y2, x1:x2]
+                    if cls not in class_map:
+                        class_map[cls] = {"images": [], "objs": []}
+                    class_map[cls]["images"].append(crop)
+                    class_map[cls]["objs"].append(obj)
+
+                # Process each class with rate limiting
+                obj_scores = []
+                for cls, group in class_map.items():
+                    confs = await self.validate_bbox_content_batch(group["images"], cls)
+                    for ob, c in zip(group["objs"], confs):
+                        obj_scores.append({"class": cls, "score": c})
+                        results["objects"].append({
+                            "bbox_idx": ob["id"],
+                            "class": cls,
+                            "class_id": ob["class_id"],
+                            "probability": c
+                        })
+
+                # Calculate scores
+                box_score = self.calculate_bbox_confidence_score(results)
                 
-                if class_id == BALL_CLASS_ID:
-                    expected_class = "soccer ball"
-                elif class_id == GOALKEEPER_CLASS_ID:
-                    expected_class = "goalkeeper"
-                elif class_id == REFEREE_CLASS_ID:
-                    expected_class = "referee"
-                else:  # PLAYER_CLASS_ID
-                    expected_class = "soccer player"
+                # Get reference counts after object validation
+                ref_counts = reference_counts or await self.get_reference_counts(frame)
+                kpt_score = await kpt_score_task
+
+                count_val = self.compare_with_reference_counts(ref_counts, results)
+                final_score = self.calculate_final_score(kpt_score, box_score, count_val["match_score"])
+
+                # Save debug visualization
+                ann = self.draw_annotations(frame, filtered)
+                ann_resized = self.resize_frame(ann, target_width=400)
+
+                current_date = datetime.now().strftime("%Y%m%d")
+                dbg_dir = Path("debug_frames") / current_date
+                dbg_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                cropped = frame[int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]
-                confidence = self.validate_bbox_content(cropped, expected_class)
-                
-                # Single line log for each detection
-                #logger.info(f"Frame {frame_idx} - {expected_class}: confidence {confidence:.3f} {'✓' if confidence >= 0.7 else '✗'} at ({bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]})")
-                
-                object_scores.append({"class": expected_class, "score": confidence})
-                validation_results["objects"].append({
-                    "bbox_idx": obj["id"],
-                    "class": expected_class,
-                    "class_id": obj["class_id"],
-                    "probability": confidence
+                # Include response_id in filename if available
+                filename_parts = [
+                    f"challenge_{challenge_id}",
+                    f"node_{node_id}",
+                    f"frame_{frame_idx}"
+                ]
+                if response_id:
+                    filename_parts.insert(1, f"resp_{response_id}")  # Insert after challenge_id
+                    
+                dbg_path = dbg_dir / f"{('_'.join(filename_parts))}_{ts}.jpg"
+                cv2.imwrite(str(dbg_path), ann_resized)
+
+                # Update results
+                results["scores"].update({
+                    "keypoint_score": kpt_score,
+                    "bbox_score": box_score,
+                    "count_match_score": count_val["match_score"],
+                    "final_score": final_score
                 })
-            
-            # Calculate scores
-            bbox_score = self.calculate_bbox_confidence_score(validation_results)
-            
-            # Compare with reference counts
-            count_validation = self.compare_with_reference_counts(reference_counts, validation_results)
-            
-            # Update final score to include count matching
-            final_score = self.calculate_final_score(
-                keypoint_score=keypoint_score,
-                bbox_score=bbox_score,
-                count_match_score=count_validation["match_score"]
-            )
-            
-            validation_results["scores"].update({
-                "keypoint_score": keypoint_score,
-                "bbox_score": bbox_score,
-                "count_match_score": count_validation["match_score"],
-                "final_score": final_score
-            })
-            
-            # Add reference count validation results
-            validation_results["count_validation"] = count_validation
-            
+                results["debug_frame_path"] = str(dbg_path)
+                results["count_validation"] = count_val
+                results["scoring_details"] = {
+                    "keypoint_score": {"score": kpt_score, "weight": 0.4},
+                    "bbox_score": {"score": box_score, "weight": 0.4, "object_scores": obj_scores},
+                    "count_match_score": {
+                        "score": count_val["match_score"],
+                        "weight": 0.2,
+                        "reference_counts": ref_counts,
+                        "detected_counts": count_val["high_confidence_counts"]
+                    }
+                }
+                results["timing"] = {
+                    "total_time": (datetime.now() - start).total_seconds()
+                }
+
+            await asyncio.wait_for(_process_frame(), timeout=FRAME_TIMEOUT)
+
+        except asyncio.TimeoutError:
+            logger.error(f"Frame {frame_idx} validation timed out")
         except Exception as e:
-            logger.error(f"Error in frame validation: {str(e)}")
-            logger.exception("Full error traceback:")
-        
-        return validation_results
+            logger.error(f"Frame {frame_idx} validation error: {str(e)}")
+
+        return results
 
     def draw_annotations(self, frame: np.ndarray, detections: dict) -> np.ndarray:
-        """Draw annotations on frame with correct colors."""
-        annotated_frame = frame.copy()
-        
-        # Draw objects
+        """Draw bounding boxes and keypoints onto the frame."""
+        out = frame.copy()
         for obj in detections.get("objects", []):
-            bbox = obj["bbox"]
-            class_id = obj["class_id"]
-            
-            if class_id == BALL_CLASS_ID:
+            (x1, y1, x2, y2) = obj["bbox"]
+            cid = obj["class_id"]
+            if cid == BALL_CLASS_ID:
                 color = COLORS["ball"]
-            elif class_id == GOALKEEPER_CLASS_ID:
+            elif cid == GOALKEEPER_CLASS_ID:
                 color = COLORS["goalkeeper"]
-            elif class_id == REFEREE_CLASS_ID:
+            elif cid == REFEREE_CLASS_ID:
                 color = COLORS["referee"]
-            else:  # PLAYER_CLASS_ID
+            else:
                 color = COLORS["player"]
-                
-            cv2.rectangle(
-                annotated_frame,
-                (int(bbox[0]), int(bbox[1])),
-                (int(bbox[2]), int(bbox[3])),
-                color,
-                2
-            )
-        
-        # Draw keypoints
-        for point in detections.get("keypoints", []):
-            if point[0] != 0 and point[1] != 0:  # Only draw non-zero keypoints
-                cv2.circle(
-                    annotated_frame,
-                    (int(point[0]), int(point[1])),
-                    5,
-                    COLORS["keypoint"],
-                    -1
-                )
-        
-        return annotated_frame
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+
+        for (x, y) in detections.get("keypoints", []):
+            if x != 0 and y != 0:
+                cv2.circle(out, (int(x), int(y)), 5, COLORS["keypoint"], -1)
+        return out
+
+    def get_class_name(self, class_id: int) -> str:
+        """Map class_id to string. (Legacy usage retained.)"""
+        names = {0: "soccer ball", 1: "goalkeeper", 2: "player", 3: "referee"}
+        return names.get(class_id, "unknown")
+
+    def validate_bbox_coordinates(
+        self,
+        bbox: List[float],
+        frame_shape: Tuple[int, int],
+        class_id: int
+    ) -> Optional[List[int]]:
+        """
+        Clamp bbox to frame bounds. Discard invalid or tiny ones.
+        """
+        try:
+            h, w = frame_shape[:2]
+            x1, y1, x2, y2 = map(int, bbox)
+            if x2 <= x1 or y2 <= y1:
+                return None
+            x1, x2 = sorted([max(0, min(x1, w)), max(0, min(x2, w))])
+            y1, y2 = sorted([max(0, min(y1, h)), max(0, min(y2, h))])
+            if class_id == 0:  # ball can be small
+                if (x2 - x1) < 1 or (y2 - y1) < 1:
+                    return None
+            else:
+                if (x2 - x1) < 5 or (y2 - y1) < 5:
+                    return None
+            return [x1, y1, x2, y2]
+        except Exception as e:
+            logger.error(f"BBox validation error: {str(e)}")
+            return None

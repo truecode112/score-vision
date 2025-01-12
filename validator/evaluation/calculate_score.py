@@ -6,6 +6,7 @@ from fiber.logging_utils import get_logger
 from validator.challenge.challenge_types import GSRResponse, ValidationResult
 from validator.db.operations import DatabaseManager
 import httpx
+import math
 
 logger = get_logger(__name__)
 
@@ -17,34 +18,31 @@ async def calculate_score(
 ) -> Dict[str, Dict[str, float]]:
     """
     Calculate scores for completed tasks and store them with reward data.
-    
-    Args:
-        evaluation_results: List of evaluation results for a single challenge
-        client: httpx.AsyncClient instance
-        validator_hotkey: Validator's public key hex
-        db_manager: DatabaseManager instance
-        
-    Returns:
-        Dict mapping node_id to score components
     """
     try:
-        # Track scores for each node
-        node_scores = {}  # Using node_id (str) as key
+        # Track scores for each response
+        response_scores = {}  # Using response_id as key
         
-        # Collect all processing times for the challenge
-        task_processing_times = [result['processing_time'] for result in evaluation_results]
+        # Collect all processing times across all responses
+        task_processing_times = []
+        for result in evaluation_results:
+            if 'processing_time' in result:
+                task_processing_times.append(result['processing_time'])
         
         # Calculate relative processing times
-        min_time = min(task_processing_times)
-        max_time = max(task_processing_times)
+        min_time = min(task_processing_times) if task_processing_times else 0
+        max_time = max(task_processing_times) if task_processing_times else 0
         
-        # Process each evaluation result
+        logger.info(f"Processing times: Min time: {min_time}, Max time: {max_time}")
+        
+        # Process each response's results
         for result in evaluation_results:
+            response_id = result['response_id']
             node_id = str(result['node_id'])
             miner_hotkey = result['miner_hotkey']
-            processing_time = result['processing_time']  # Use directly from response table
+            processing_time = result['processing_time']
             
-            # Get quality score from validation result
+            # Calculate quality score
             quality_score = result['validation_result'].score
             
             # Calculate speed score
@@ -60,12 +58,10 @@ async def calculate_score(
                 availability_score * 0.2
             )
             
-            # Parse response data to ensure it's a dict
+            # Parse response data
             try:
-                # If it's already a dict, use it as is
                 if isinstance(result['task_returned_data'], dict):
                     response_data = result['task_returned_data']
-                # If it's a string, try to parse it
                 elif isinstance(result['task_returned_data'], str):
                     response_data = json.loads(result['task_returned_data'])
                 else:
@@ -74,53 +70,54 @@ async def calculate_score(
                 logger.warning(f"Could not parse response data for node {node_id}, using empty dict")
                 response_data = {}
             
-            # Ensure timestamps are properly formatted
+            # Handle timestamps
             started_at = result.get('started_at')
             completed_at = result.get('completed_at')
             
-            # Convert to ISO format string if needed
+            # Format timestamps
             if started_at:
                 if isinstance(started_at, datetime):
                     started_at = started_at.isoformat()
-                elif isinstance(started_at, str):
-                    # Assume it's already in ISO format
-                    started_at = started_at
-                else:
+                elif not isinstance(started_at, str):
                     started_at = None
                     
             if completed_at:
                 if isinstance(completed_at, datetime):
                     completed_at = completed_at.isoformat()
-                elif isinstance(completed_at, str):
-                    # Assume it's already in ISO format
-                    completed_at = completed_at
-                else:
+                elif not isinstance(completed_at, str):
                     completed_at = None
             
-            # Store scores for each node
-            node_scores[node_id] = {
-                'response_id': result['response_id'],
+            # Store scores for this response
+            response_scores[response_id] = {
+                'node_id': node_id,
                 'miner_hotkey': miner_hotkey,
                 'quality_score': quality_score,
                 'speed_score': speed_score,
                 'availability_score': availability_score,
                 'final_score': final_score,
-                'processing_time': float(processing_time),  # Ensure it's a float
+                'processing_time': float(processing_time),
                 'validation_result': result['validation_result'],
                 'task_returned_data': response_data,
-                'started_at': started_at,  # Will be None or ISO format string
-                'completed_at': completed_at  # Will be None or ISO format string
+                'started_at': started_at,
+                'completed_at': completed_at
             }
         
-        return node_scores
+        return response_scores
         
     except Exception as e:
         logger.error(f"Error in calculate_score: {str(e)}", exc_info=True)
         return {}
 
 def calculate_speed_score(processing_time: float, min_time: float, max_time: float) -> float:
-    """Calculate speed score based on processing time."""
+    """Calculate speed score based on processing time using exponential scaling."""
     if max_time == min_time:
         return 1.0  # If all times are the same, give full score
+        
+    # Normalize time to 0-1 range
     normalized_time = (processing_time - min_time) / (max_time - min_time)
-    return 1.0 - normalized_time  # Invert so faster times get higher scores
+    
+    # Apply exponential scaling to more aggressively reward faster times
+    # Using exponential decay with base e
+    exp_score = math.exp(-5 * normalized_time)  # -5 controls steepness of decay
+    
+    return max(0.0, min(1.0, exp_score))  # Ensure score stays in 0-1 range

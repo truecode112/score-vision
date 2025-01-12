@@ -188,20 +188,26 @@ async def update_task_scores(
             "availability_score": float(availability_score),
             "total_score": float(total_score),
             "processing_time": float(processing_time),
-            "started_at": started_at,  # Already in ISO format
-            "completed_at": completed_at  # Already in ISO format
+            "started_at": started_at,
+            "completed_at": completed_at
         }
         
-        # Log request data (excluding response_data)
-        # log_data = data.copy()
-        # log_data.pop('response_data', None)
-        # logger.info(f"Sending task score update:")
-        # logger.info(f"URL: {SCORE_VISION_API}/api/tasks/update?validator_hotkey={validator_address}")
-        # logger.info("Request data:")
-        # for key, value in log_data.items():
-        #     logger.info(f"  {key}: {value}")
+        # Enhanced logging with challenge context
+        logger.info(f"Preparing API update for challenge {challenge_id}:")
+        logger.info(f"  Endpoint: {SCORE_VISION_API}/api/tasks/update")
+        logger.info(f"  Validator: {validator_address}")
+        logger.info(f"  Miner: {miner_id} ({miner_hotkey})")
+        logger.info(f"  Scores:")
+        logger.info(f"    - Evaluation: {evaluation_score:.3f}")
+        logger.info(f"    - Speed: {speed_score:.3f}")
+        logger.info(f"    - Availability: {availability_score:.3f}")
+        logger.info(f"    - Total: {total_score:.3f}")
+        logger.info(f"  Timing:")
+        logger.info(f"    - Processing time: {processing_time:.2f}s")
+        logger.info(f"    - Started: {started_at}")
+        logger.info(f"    - Completed: {completed_at}")
         
-        # Make request
+        # Make request with retries
         url = f"{SCORE_VISION_API}/api/tasks/update"
         params = {"validator_hotkey": validator_address}
         
@@ -211,19 +217,23 @@ async def update_task_scores(
         while retry_count < max_retries:
             try:
                 async with httpx.AsyncClient() as client:
+                    logger.info(f"Sending API request (attempt {retry_count + 1}/{max_retries})")
                     response = await client.post(url, params=params, json=data)
                     if not response.is_success:
                         logger.error(f"API Error Response: {response.text}")
                     response.raise_for_status()
+                    logger.info(f"Successfully updated scores for challenge {challenge_id}")
                     return True
                     
             except httpx.HTTPError as e:
                 retry_count += 1
-                logger.error(f"Error updating task scores (Attempt {retry_count}/{max_retries}): {str(e)}")
+                logger.error(f"API request failed (Attempt {retry_count}/{max_retries}): {str(e)}")
                 if retry_count == max_retries:
+                    logger.error(f"Failed to update scores for challenge {challenge_id} after {max_retries} attempts")
                     return False
-                await asyncio.sleep(1)  # Wait before retrying
+                logger.info(f"Retrying in 1 second...")
+                await asyncio.sleep(1)
                 
     except Exception as e:
-        logger.error(f"Error preparing task score update: {str(e)}")
+        logger.error(f"Error preparing task score update for challenge {challenge_id}: {str(e)}")
         return False
