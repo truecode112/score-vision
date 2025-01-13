@@ -24,6 +24,11 @@ run_cmd ln -fs /usr/share/zoneinfo/UTC /etc/localtime
 run_cmd apt-get install -y tzdata
 run_cmd dpkg-reconfigure -f noninteractive tzdata
 
+# Add deadsnakes PPA for Python 3.10
+run_cmd apt-get install -y software-properties-common
+run_cmd add-apt-repository -y ppa:deadsnakes/ppa
+run_cmd apt-get update
+
 # Install Python 3.10 and related tools
 run_cmd apt-get install -y \
     python3.10 \
@@ -38,7 +43,7 @@ run_cmd apt-get install -y \
     libreadline-dev \
     libsqlite3-dev \
     curl \
-    libncursesw5-dev \
+    libncurses5-dev \
     xz-utils \
     tk-dev \
     libxml2-dev \
