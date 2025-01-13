@@ -79,15 +79,9 @@ def get_active_nodes_with_stake() -> list[Node]:
         logger.info(f"Found {len(active_nodes)} nodes with stake less than {MAX_STAKE} TAO")
         for node in active_nodes:
             logger.info(f"Active node id: {node.node_id} hotkey: {node.hotkey}, ip: {node.ip}, port: {node.port}, last_updated: {node.last_updated}")
-            # logger.info(f"  - Node ID: {node.node_id}")
-            # logger.info(f"  - Stake: {node.stake} TAO")
-            # logger.info(f"  - IP: {node.ip}")
-            # logger.info(f"  - Port: {node.port}")
-            # logger.info(f"  - Last update: {node.last_updated}")
         
-        result = active_nodes[:MAX_MINERS] if MAX_MINERS else active_nodes
-        logger.info(f"Returning {len(result)} nodes after MAX_MINERS limit of {MAX_MINERS}")
-        return result
+        # Return all active nodes without MAX_MINERS filtering
+        return active_nodes
         
     except Exception as e:
         logger.error(f"Failed to get active nodes: {str(e)}")
@@ -188,9 +182,9 @@ async def get_available_nodes(
     db_manager: DatabaseManager,
     hotkey: str
 ) -> list[Node]:
-    """Check availability of all nodes and return available ones."""
+    """Check availability of all nodes and return available ones up to MAX_MINERS."""
     # First check availability for all nodes
-    logger.info(f"Checking availability for {len(nodes)} nodes")
+    logger.info(f"Checking availability for all {len(nodes)} nodes")
     availability_tasks = [
         check_miner_availability(node, client, db_manager, hotkey)
         for node in nodes
@@ -204,18 +198,22 @@ async def get_available_nodes(
         if is_available
     ]
     
-    logger.info(f"Found {len(available_nodes)} available nodes out of {len(nodes)} total nodes")
+    total_available = len(available_nodes)
+    logger.info(f"Found {total_available} available nodes out of {len(nodes)} total nodes")
     
     # If we have more available nodes than MAX_MINERS, randomly select MAX_MINERS
-    if len(available_nodes) > MAX_MINERS:
-        logger.info(f"Randomly selecting {MAX_MINERS} nodes from {len(available_nodes)} available nodes")
-        available_nodes = random.sample(available_nodes, MAX_MINERS)
+    selected_nodes = available_nodes
+    if total_available > MAX_MINERS:
+        logger.info(f"Randomly selecting {MAX_MINERS} nodes from {total_available} available nodes")
+        selected_nodes = random.sample(available_nodes, MAX_MINERS)
+    else:
+        logger.info(f"Using all {total_available} available nodes (less than MAX_MINERS={MAX_MINERS})")
     
     # Log selected nodes
-    for node in available_nodes:
+    for node in selected_nodes:
         logger.info(f"Selected node {node.node_id} (hotkey: {node.hotkey})")
     
-    return available_nodes
+    return selected_nodes
 
 async def weights_update_loop(db_manager: DatabaseManager) -> None:
     """Run the weights update loop on WEIGHTS_INTERVAL."""
