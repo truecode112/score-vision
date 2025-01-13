@@ -36,8 +36,7 @@ scp ~/.bittensor/wallets/[walletname]/coldkeypub.txt [user]@[SERVERIP]:~/.bitten
 ```bash
 uv venv
 source .venv/bin/activate  # On Unix-like systems
-# or
-.venv\Scripts\activate  # On Windows
+
 ```
 
 2. Install dependencies:
@@ -57,7 +56,13 @@ cp validator/.env.example validator/.env
 
 ### Production Deployment (PM2)
 
+Start the auto-updater and validator:
+
 ```bash
+# Start the auto-updater (handles code updates and dependency management)
+pm2 start validator_auto_update.sh --name validator-updater --interpreter bash -- sn44-validator
+
+# Start the validator
 cd validator
 pm2 start \
   --name "sn44-validator" \
