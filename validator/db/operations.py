@@ -364,7 +364,6 @@ class DatabaseManager:
                     'final_score': row[7]
                 }
             
-            logger.info(f"Fetched scores for {len(miner_scores)} miners")
             return miner_scores
 
     def get_challenge(self, challenge_id: str) -> Optional[Dict]:
