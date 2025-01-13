@@ -69,7 +69,7 @@ def get_active_nodes_with_stake() -> list[Node]:
         logger.info(f"Found {len(nodes)} total nodes on chain")
         
         # Filter for active nodes with less than 100 TAO stake
-        MAX_STAKE = 100.0  # 100 TAO maximum stake
+        MAX_STAKE = 999  # 999 TAO maximum stake
         active_nodes = [
             node for node in nodes
             if node.stake < MAX_STAKE  # Changed from >= MIN_STAKE_THRESHOLD to < MAX_STAKE
