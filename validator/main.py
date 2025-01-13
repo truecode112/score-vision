@@ -387,8 +387,8 @@ async def main():
                     
                     if num_active < MIN_MINERS:
                         logger.warning(f"Only {num_active} active nodes with sufficient stake (minimum {MIN_MINERS} required)")
-                        logger.info("Will check again in 60 seconds...")
-                        await asyncio.sleep(60)
+                        logger.info(f"Will check again in {CHALLENGE_INTERVAL.total_seconds()} seconds...")
+                        await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
                     logger.info(f"Found {num_active} active nodes with sufficient stake")
@@ -399,8 +399,8 @@ async def main():
                     
                     if num_available < MIN_MINERS:
                         logger.warning(f"Only {num_available} nodes are available (minimum {MIN_MINERS} required)")
-                        logger.info("Sleeping for 60 seconds before next availability check...")
-                        await asyncio.sleep(60)
+                        logger.info(f"Sleeping for {CHALLENGE_INTERVAL.total_seconds()} seconds before next availability check...")
+                        await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
                     logger.info(f"Processing {num_available} available nodes")
@@ -473,14 +473,14 @@ async def main():
                     if num_active_challenges > 0:
                         logger.info(f"Currently tracking {num_active_challenges} active challenges")
 
-                    # Sleep for 60 seconds before the next iteration
-                    await asyncio.sleep(60)
+                    # Sleep until next challenge interval
+                    await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
 
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
                     logger.error(f"Error in main loop: {str(e)}")
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
         finally:
             # Cancel evaluation and weights loops
             evaluation_task.cancel()

@@ -38,7 +38,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
-CHALLENGE_INTERVAL = timedelta(minutes=60)
+CHALLENGE_INTERVAL = timedelta(minutes=30)
 CHALLENGE_TIMEOUT = timedelta(minutes=120)
 
 WEIGHTS_INTERVAL = timedelta(minutes=30)
