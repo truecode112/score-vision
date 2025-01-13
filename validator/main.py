@@ -252,7 +252,7 @@ async def periodic_cleanup(db_manager: DatabaseManager, interval_hours: int = 24
                             continue
                             
                         file_age = current_time - datetime.fromtimestamp(frame_file.stat().st_mtime)
-                        if file_age.days > 1:
+                        if file_age.days > 7:
                             try:
                                 frame_file.unlink()
                                 deleted_count += 1
@@ -318,7 +318,7 @@ async def main():
                 openai_api_key=OPENAI_API_KEY,
                 validator_hotkey=hotkey.ss58_address,
                 batch_size=10,
-                sleep_interval=10
+                sleep_interval=120
             )
         )
         evaluation_task.add_done_callback(
@@ -365,7 +365,7 @@ async def main():
                                             openai_api_key=OPENAI_API_KEY,
                                             validator_hotkey=hotkey.ss58_address,
                                             batch_size=10,
-                                            sleep_interval=120
+                                            sleep_interval=10
                                         )
                                     )
                                 elif task == weights_task:
