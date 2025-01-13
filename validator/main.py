@@ -189,21 +189,31 @@ async def get_available_nodes(
     hotkey: str
 ) -> list[Node]:
     """Check availability of all nodes and return available ones."""
+    # First check availability for all nodes
+    logger.info(f"Checking availability for {len(nodes)} nodes")
     availability_tasks = [
         check_miner_availability(node, client, db_manager, hotkey)
         for node in nodes
     ]
     
     availability_results = await asyncio.gather(*availability_tasks)
+    
+    # Filter available nodes
     available_nodes = [
         node for node, is_available in zip(nodes, availability_results)
         if is_available
     ]
     
+    logger.info(f"Found {len(available_nodes)} available nodes out of {len(nodes)} total nodes")
+    
     # If we have more available nodes than MAX_MINERS, randomly select MAX_MINERS
     if len(available_nodes) > MAX_MINERS:
-        logger.info(f"Found {len(available_nodes)} available nodes, selecting {MAX_MINERS} randomly")
+        logger.info(f"Randomly selecting {MAX_MINERS} nodes from {len(available_nodes)} available nodes")
         available_nodes = random.sample(available_nodes, MAX_MINERS)
+    
+    # Log selected nodes
+    for node in available_nodes:
+        logger.info(f"Selected node {node.node_id} (hotkey: {node.hotkey})")
     
     return available_nodes
 

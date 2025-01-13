@@ -755,17 +755,27 @@ class DatabaseManager:
         response_time_ms: float,
         error: Optional[str] = None
     ) -> None:
-        """Log an availability check for a miner."""
-        query = """
-        INSERT INTO availability_checks 
-        (node_id, hotkey, checked_at, is_available, response_time_ms, error)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """
-        with self.conn:
-            self.conn.execute(
-                query,
-                (node_id, hotkey, datetime.utcnow(), is_available, response_time_ms, error)
-            )
+        """Log an availability check for a miner with enhanced error handling."""
+        try:
+            query = """
+            INSERT INTO availability_checks 
+            (node_id, hotkey, checked_at, is_available, response_time_ms, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """
+            with self.conn:
+                self.conn.execute(
+                    query,
+                    (node_id, hotkey, datetime.utcnow(), is_available, response_time_ms, error)
+                )
+            
+            # Log the result
+            status = "available" if is_available else "unavailable"
+            error_msg = f" (Error: {error})" if error else ""
+            logger.info(f"Node {node_id} ({hotkey}) is {status} - Response time: {response_time_ms:.2f}ms{error_msg}")
+            
+        except Exception as e:
+            logger.error(f"Failed to log availability check for node {node_id}: {str(e)}")
+            # Don't raise the exception - we don't want availability logging to break the main flow
 
     def get_recent_availability(
         self,
