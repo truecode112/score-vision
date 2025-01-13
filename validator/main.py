@@ -365,7 +365,7 @@ async def main():
                                             openai_api_key=OPENAI_API_KEY,
                                             validator_hotkey=hotkey.ss58_address,
                                             batch_size=10,
-                                            sleep_interval=10
+                                            sleep_interval=120
                                         )
                                     )
                                 elif task == weights_task:

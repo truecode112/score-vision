@@ -107,11 +107,8 @@ async def evaluate_pending_responses(
     Each challenge's responses are evaluated in parallel to speed it up.
     """
     logger.info("Starting evaluation loop")
-    loop_count = 0
     while True:
         try:
-            loop_count += 1
-            logger.info(f"Evaluation loop iteration {loop_count}")
             
             # Pull unevaluated responses grouped by challenge_id
             conn = db_manager.get_connection()
