@@ -31,11 +31,6 @@ SCORE_VISION_API = "https://api.scorevision.io"
 
 VERSION_KEY = 2025
 
-# Weights configuration
-WEIGHT_EVALUATION = 0.6
-WEIGHT_AVAILABILITY = 0.3
-WEIGHT_SPEED = 0.1
-
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -68,7 +63,4 @@ logger.info(f"Challenge timeout: {CHALLENGE_TIMEOUT}")
 logger.info(f"Weights interval: {WEIGHTS_INTERVAL}")
 logger.info(f"DB path: {DB_PATH}")
 logger.info(f"Log level: {LOG_LEVEL}")
-logger.info(f"Weight evaluation: {WEIGHT_EVALUATION}")
-logger.info(f"Weight availability: {WEIGHT_AVAILABILITY}")
-logger.info(f"Weight speed: {WEIGHT_SPEED}")
 logger.info(f"Validation delay: {VALIDATION_DELAY}")

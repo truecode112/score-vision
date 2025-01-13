@@ -28,9 +28,7 @@ from validator.config import (
     WALLET_NAME, HOTKEY_NAME,
     MIN_MINERS, MAX_MINERS, MIN_STAKE_THRESHOLD,
     CHALLENGE_INTERVAL, CHALLENGE_TIMEOUT, DB_PATH,
-    SCORE_THRESHOLD, WEIGHTS_INTERVAL,
-    WEIGHT_EVALUATION, WEIGHT_AVAILABILITY, WEIGHT_SPEED,
-    OPENAI_API_KEY
+    SCORE_THRESHOLD, WEIGHTS_INTERVAL, OPENAI_API_KEY
 )
 from validator.challenge.send_challenge import send_challenge
 from validator.challenge.challenge_types import (
@@ -223,7 +221,7 @@ async def weights_update_loop(db_manager: DatabaseManager) -> None:
 
 async def periodic_cleanup(db_manager: DatabaseManager, interval_hours: int = 24):
     """
-    Periodically clean up old data from the database.
+    Periodically clean up old data from the database and debug frames.
     
     Args:
         db_manager: DatabaseManager instance
@@ -231,9 +229,46 @@ async def periodic_cleanup(db_manager: DatabaseManager, interval_hours: int = 24
     """
     while True:
         try:
-            logger.info("Starting periodic database cleanup")
+            logger.info("Starting periodic database and debug frames cleanup")
+            
+            # Clean up database
             db_manager.cleanup_old_data()
-            logger.info("Periodic database cleanup completed")
+            logger.info("Database cleanup completed")
+            
+            # Clean up debug frames older than 7 days
+            debug_frames_dir = Path("debug_frames")
+            if debug_frames_dir.exists():
+                current_time = datetime.now()
+                deleted_count = 0
+                
+                # Iterate through all date subdirectories
+                for date_dir in debug_frames_dir.iterdir():
+                    if not date_dir.is_dir():
+                        continue
+                        
+                    # Check all files in the date directory
+                    for frame_file in date_dir.iterdir():
+                        if not frame_file.is_file():
+                            continue
+                            
+                        file_age = current_time - datetime.fromtimestamp(frame_file.stat().st_mtime)
+                        if file_age.days > 1:
+                            try:
+                                frame_file.unlink()
+                                deleted_count += 1
+                            except Exception as e:
+                                logger.error(f"Error deleting old debug frame {frame_file}: {str(e)}")
+                    
+                    # Try to remove empty date directories
+                    try:
+                        if not any(date_dir.iterdir()):
+                            date_dir.rmdir()
+                    except Exception as e:
+                        logger.error(f"Error removing empty directory {date_dir}: {str(e)}")
+                
+                logger.info(f"Removed {deleted_count} debug frames older than 7 days")
+            
+            logger.info("Periodic cleanup completed")
         except Exception as e:
             logger.error(f"Error during periodic cleanup: {str(e)}")
         
