@@ -29,7 +29,7 @@ FRAMES_TO_VALIDATE = 2
 SCORE_VISION_API = "https://api.scorevision.io"
 #SCORE_VISION_API = "http://localhost:8000"
 
-VERSION_KEY = 2025
+VERSION_KEY = 2026
 
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -39,7 +39,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
 CHALLENGE_INTERVAL = timedelta(minutes=30)
-CHALLENGE_TIMEOUT = timedelta(minutes=120)
+CHALLENGE_TIMEOUT = timedelta(minutes=100)
 
 WEIGHTS_INTERVAL = timedelta(minutes=30)
 VALIDATION_DELAY = timedelta(minutes=120)
