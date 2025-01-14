@@ -23,9 +23,9 @@ VALIDATOR_HOST = os.getenv("VALIDATOR_HOST", "0.0.0.0")
 
 # Default configuration values
 MIN_MINERS = 1
-MAX_MINERS = 100
+MAX_MINERS = 50
 SCORE_THRESHOLD = 0.7
-FRAMES_TO_VALIDATE = 3
+FRAMES_TO_VALIDATE = 2
 SCORE_VISION_API = "https://api.scorevision.io"
 #SCORE_VISION_API = "http://localhost:8000"
 

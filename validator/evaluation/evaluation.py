@@ -25,8 +25,8 @@ OPENAI_TIMEOUT = 30.0  # seconds
 BATCH_TIMEOUT = 60.0   # seconds
 FRAME_TIMEOUT = 180.0  # seconds
 MAX_CONCURRENT_CALLS = 3
-VLM_RATE_LIMIT = 10  # requests per second
-VLM_BATCH_SIZE = 5   # number of images per batch
+VLM_RATE_LIMIT = 1  # requests per second
+VLM_BATCH_SIZE = 10   # number of images per batch
 
 logger = get_logger(__name__)
 
@@ -88,7 +88,7 @@ class GSRValidator:
     async def ask_vlm_batch(
         self,
         messages_list: List[List[Dict]],
-        max_tokens: int = 500,
+        max_tokens: int = 1000,
         temperature: float = 0.2,
         model_chutes: str = "OpenGVLab/InternVL2_5-78B",
         model_openai: str = "gpt-4o"
@@ -187,7 +187,7 @@ class GSRValidator:
     async def ask_vlm(
         self,
         messages: List[Dict],
-        max_tokens: int = 500,
+        max_tokens: int = 1000,
         temperature: float = 0.2,
         model_chutes: str = "OpenGVLab/InternVL2_5-78B",
         model_openai: str = "gpt-4o"
