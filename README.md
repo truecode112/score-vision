@@ -81,12 +81,12 @@ Our dynamic incentive system adjusts rewards based on network demands and perfor
 - [x] VLM-based validation
 - [x] Incentive mechanism
 - [x] Testnet deploy on netuid 261
-- [ ] Community testing
-- [ ] Comprehensive benchmarking
+- [x] Community testing
+- [x] Comprehensive benchmarking
 
 ### Phase 2 (Q1 2025)
 
-- [ ] mainnet deploy on netuid 44 week commencing 6 January
+- [x] mainnet deploy on netuid 44 week commencing 13 January
 - [ ] Human-in-the-loop validation
 - [ ] Additional footage type (grassroots)
 - [ ] Dashboard and Leaderboard
