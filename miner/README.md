@@ -154,7 +154,7 @@ Key environment variables in `.env`:
 
 ```bash
 # Network
-NETUID=261                                    # Subnet ID (261 for testnet)
+NETUID=261                                    # Subnet ID (261 for testnet, 44 for mainnnet)
 SUBTENSOR_NETWORK=test                        # Network type (test/local)
 SUBTENSOR_ADDRESS=wss://test.finney.opentensor.ai:443  # Network address
 
@@ -199,3 +199,9 @@ DEVICE=cuda                                   # Computing device (cuda/cpu/mps)
    - Monitor network latency
 
 For advanced configuration options and architecture details, see the [main README](../README.md).
+
+## Credit
+
+A big shout out to Skalskip and the work they're doing over at Roboflow. The base miner utilizes models and techniques from:
+
+- [Roboflow Sports](https://github.com/roboflow/sports) - An open-source repository providing computer vision tools and models for sports analytics, particularly focused on soccer/football detection tasks.
