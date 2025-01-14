@@ -70,7 +70,7 @@ uv pip install "git+https://github.com/rayonlabs/fiber.git@2.1.0#egg=fiber[full]
 3. Register your IP:
 
 ```bash
-fiber-post-ip --netuid 44 --subtensor.network test --external_port 7999 --wallet.name [WALLET_NAME] --wallet.hotkey [HOTKEY_NAME] --external_ip [YOUR-IP]
+fiber-post-ip --netuid 44 --subtensor.network test --external_port [YOUR-PORT] --wallet.name [WALLET_NAME] --wallet.hotkey [HOTKEY_NAME] --external_ip [YOUR-IP]
 ```
 
 ## Running the Miner
