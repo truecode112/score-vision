@@ -24,9 +24,9 @@ from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
 OPENAI_TIMEOUT = 30.0  # seconds
 BATCH_TIMEOUT = 60.0   # seconds
 FRAME_TIMEOUT = 180.0  # seconds
-MAX_CONCURRENT_CALLS = 3
+MAX_CONCURRENT_CALLS = 1
 VLM_RATE_LIMIT = 1  # requests per second
-VLM_BATCH_SIZE = 10   # number of images per batch
+VLM_BATCH_SIZE = 5   # number of images per batch
 
 logger = get_logger(__name__)
 

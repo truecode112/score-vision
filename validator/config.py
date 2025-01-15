@@ -10,7 +10,7 @@ env_path = validator_dir / ".env"
 load_dotenv(env_path)
 
 # Network configuration
-NETUID = int(os.getenv("NETUID", "1"))
+NETUID = int(os.getenv("NETUID", "261"))
 SUBTENSOR_NETWORK = os.getenv("SUBTENSOR_NETWORK", "test")
 SUBTENSOR_ADDRESS = os.getenv("SUBTENSOR_ADDRESS", "127.0.0.1:9944")
 

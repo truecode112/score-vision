@@ -283,6 +283,38 @@ async def periodic_cleanup(db_manager: DatabaseManager, interval_hours: int = 24
         # Wait for the next cleanup interval
         await asyncio.sleep(interval_hours * 3600)
 
+async def get_next_challenge_with_retry(hotkey: str, max_retries: int = 2, initial_delay: float = 5.0) -> Optional[dict]:
+    """
+    Attempt to fetch the next challenge from the API with retries.
+    
+    Args:
+        hotkey (str): The validator's hotkey.
+        max_retries (int): Maximum number of retry attempts.
+        initial_delay (float): Initial delay in seconds between retries.
+    
+    Returns:
+        Optional[dict]: Challenge data if successful, None otherwise.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            logger.info(f"Fetching next challenge from API (Attempt {attempt + 1}/{max_retries + 1})...")
+            challenge_data = await get_next_challenge(hotkey)
+            if challenge_data:
+                logger.info(f"Successfully fetched challenge: task_id={challenge_data['task_id']}")
+                return challenge_data
+            else:
+                logger.warning("No challenge available from API")
+        except Exception as e:
+            logger.error(f"Error fetching challenge: {str(e)}")
+        
+        if attempt < max_retries:
+            delay = initial_delay * (2 ** attempt)  # Exponential backoff
+            logger.info(f"Retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+    
+    logger.warning("Failed to fetch challenge after all retry attempts")
+    return None
+
 async def main():
     """Main validator loop."""
     # Load configuration
@@ -416,18 +448,16 @@ async def main():
                     # Generate and send challenges
                     challenge_time = time.time()
                     new_challenge_tasks = []
-                    
-                    # Fetch next challenge from API
-                    logger.info("Fetching next challenge from API...")
-                    challenge_data = await get_next_challenge(hotkey.ss58_address)
+
+                    # Fetch next challenge from API with retries
+                    challenge_data = await get_next_challenge_with_retry(hotkey.ss58_address)
                     if not challenge_data:
-                        logger.warning("No challenge available from API")
                         logger.info(f"Sleeping for {CHALLENGE_INTERVAL.total_seconds()} seconds before next challenge check...")
                         await asyncio.sleep(CHALLENGE_INTERVAL.total_seconds())
                         continue
 
-                    logger.info(f"Got challenge from API: task_id={challenge_data['task_id']}")
-                    
+                    logger.info(f"Processing challenge: task_id={challenge_data['task_id']}")
+
                     # Log background task status
                     logger.info("Background task status:")
                     logger.info(f"  - Evaluation task running: {not evaluation_task.done()}")
