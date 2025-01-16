@@ -17,6 +17,40 @@ from validator.config import (
 
 logger = get_logger(__name__)
 
+async def _set_weights_with_timeout(
+    substrate,
+    keypair,
+    node_ids: List[int],
+    node_weights: List[float],
+    validator_node_id: int,
+    version_key: int,
+    timeout: float = 120.0  # 2 minutes timeout
+) -> bool:
+    """Wrapper to call set_node_weights with a timeout."""
+    try:
+        return await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                weights.set_node_weights,
+                substrate,
+                keypair,
+                node_ids,
+                node_weights,
+                NETUID,
+                validator_node_id,
+                version_key,
+                True,  # wait_for_inclusion
+                True,  # wait_for_finalization
+            ),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"set_node_weights timed out after {timeout} seconds")
+        return False
+    except Exception as e:
+        logger.error(f"Error in set_node_weights: {str(e)}")
+        return False
+
 async def set_weights(
     db_manager: DatabaseManager,
 ) -> None:
@@ -86,20 +120,20 @@ async def set_weights(
                 f"weight={weight:.4f}"
             )
         
-        # Set weights on chain
-        weights.set_node_weights(
+        # Set weights on chain with timeout
+        success = await _set_weights_with_timeout(
             substrate=substrate,
             keypair=keypair,
             node_ids=node_ids,
             node_weights=node_weights,
-            netuid=NETUID,
             validator_node_id=validator_node_id,
-            version_key=version_key,
-            wait_for_inclusion=True,
-            wait_for_finalization=True,
+            version_key=version_key
         )
         
-        logger.info("Successfully set weights on chain")
+        if success:
+            logger.info("Successfully set weights on chain")
+        else:
+            logger.error("Failed to set weights on chain")
         
     except Exception as e:
         logger.error(f"Error setting weights: {str(e)}")
