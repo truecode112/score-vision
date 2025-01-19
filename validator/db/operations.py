@@ -288,7 +288,7 @@ class DatabaseManager:
             conn.close()
 
     def get_miner_scores(self) -> Dict[int, Dict[str, Any]]:
-        """Get calculated scores for miners from the last 24 hours"""
+        """Get calculated scores for miners from the last 72 hours"""
         query = """
         SELECT 
             r.node_id,
@@ -301,7 +301,7 @@ class DatabaseManager:
             AVG(rs.total_score) as final_score
         FROM responses r
         JOIN response_scores rs ON r.response_id = rs.response_id
-        WHERE r.received_at >= datetime('now', '-24 hours')
+        WHERE r.received_at >= datetime('now', '-72 hours')
         GROUP BY r.node_id, r.miner_hotkey
         HAVING response_count > 0
         """
@@ -328,7 +328,7 @@ class DatabaseManager:
             return miner_scores
 
     def get_miner_scores_with_node_id(self) -> Dict[int, Dict[str, Any]]:
-        """Get calculated scores for miners from the last 24 hours, including node_id"""
+        """Get calculated scores for miners from the last 72 hours, including node_id"""
         query = """
         SELECT 
             r.node_id,
@@ -341,7 +341,7 @@ class DatabaseManager:
             AVG(rs.total_score) as final_score
         FROM responses r
         JOIN response_scores rs ON r.response_id = rs.response_id
-        WHERE r.received_at >= datetime('now', '-24 hours')
+        WHERE r.received_at >= datetime('now', '-72 hours')
         GROUP BY r.node_id, r.miner_hotkey
         HAVING response_count > 0
         """
