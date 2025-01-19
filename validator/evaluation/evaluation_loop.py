@@ -12,9 +12,15 @@ from validator.evaluation.evaluation import GSRValidator
 from validator.challenge.challenge_types import GSRResponse, ValidationResult, GSRChallenge, ChallengeType
 from validator.evaluation.calculate_score import calculate_score
 from validator.utils.api import update_task_scores
-from validator.config import VALIDATION_DELAY
+from validator.config import VALIDATION_DELAY, FRAMES_TO_VALIDATE
+from validator.evaluation.prompts import COUNT_PROMPT
 from loguru import logger
 import cv2
+
+# New constant for minimum number of players
+MIN_PLAYERS_PER_FRAME = 4
+INITIAL_FRAME_SAMPLE_SIZE = 20
+RESPONSES_TO_CHECK = 10
 
 logger = get_logger(__name__)
 
@@ -32,11 +38,11 @@ async def _evaluate_single_response(
         row_dict = dict(row)
         if 'response_data' in row_dict:
             row_dict['response_data'] = '<omitted>'
-        logger.info(f"Processing row: {row_dict}")
+        #logger.info(f"Processing row: {row_dict}")
         
         # Get response data
         response_data = json.loads(row["response_data"] if row["response_data"] else "{}")
-        logger.info(f"Response metadata - challenge_id: {row['challenge_id']}, miner_hotkey: {row['miner_hotkey']}")
+        #logger.info(f"Response metadata - challenge_id: {row['challenge_id']}, miner_hotkey: {row['miner_hotkey']}")
         
         # Create GSRResponse object with node_id
         response = GSRResponse(
@@ -47,7 +53,7 @@ async def _evaluate_single_response(
             response_id=row["response_id"],
             node_id=row["node_id"]
         )
-        logger.info(f"Created GSRResponse object for response_id: {response.response_id}")
+        #logger.info(f"Created GSRResponse object for response_id: {response.response_id}")
 
         # Get challenge data
         challenge = GSRChallenge(
@@ -56,12 +62,12 @@ async def _evaluate_single_response(
             created_at=row["created_at"] if "created_at" in row.keys() else None,
             video_url=row["video_url"] if "video_url" in row.keys() else ""
         )
-        logger.info(f"Processing challenge_id: {challenge.challenge_id}")
+        #logger.info(f"Processing challenge_id: {challenge.challenge_id}")
 
         # Get timing information from database
         started_at = db_manager.get_challenge_assignment_sent_at(challenge.challenge_id, response.miner_hotkey)
         completed_at = row["completed_at"] if "completed_at" in row.keys() else None
-        logger.info(f"Timing info - started_at: {started_at}, completed_at: {completed_at}")
+        #logger.info(f"Timing info - started_at: {started_at}, completed_at: {completed_at}")
 
         # Evaluate response using cached frames if available
         result = await validator.evaluate_response(
@@ -95,6 +101,58 @@ async def _evaluate_single_response(
         if hasattr(row, 'keys'):
             logger.error(f"Available row keys: {row.keys()}")
         raise
+
+async def select_frames_with_players(
+    validator: GSRValidator,
+    video_path: Path,
+    db_manager: DatabaseManager,
+    challenge_id: str,
+    num_frames: int = FRAMES_TO_VALIDATE
+) -> List[int]:
+    """
+    Select frames that contain at least MIN_PLAYERS_PER_FRAME players on average.
+    """
+    all_frames = validator.select_random_frames(video_path, INITIAL_FRAME_SAMPLE_SIZE)
+    frame_cache = {}
+    player_counts = {frame: [] for frame in all_frames}
+
+    # Get a sample of responses for this challenge
+    responses = db_manager.get_sample_responses(challenge_id, RESPONSES_TO_CHECK)
+
+    for frame in all_frames:
+        cap = cv2.VideoCapture(str(video_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
+        ret, frame_image = cap.read()
+        cap.release()
+        if ret:
+            frame_cache[frame] = {'frame': frame_image}
+
+    for response in responses:
+        response_data = json.loads(response["response_data"])
+        for frame in all_frames:
+            frame_data = response_data.get("frames", {}).get(str(frame), {})
+            player_count = sum(1 for obj in frame_data.get("objects", []) 
+                               if obj["class_id"] in [1, 2])  # goalkeeper and player
+            player_counts[frame].append(player_count)
+
+    # Calculate average player count for each frame
+    avg_player_counts = {frame: sum(counts) / len(counts) if counts else 0 
+                         for frame, counts in player_counts.items()}
+
+    # Select frames with sufficient players
+    selected_frames = [frame for frame, avg_count in avg_player_counts.items() 
+                       if avg_count >= MIN_PLAYERS_PER_FRAME]
+
+    # If we don't have enough frames, add the ones with the highest average player count
+    if len(selected_frames) < num_frames:
+        remaining_frames = sorted(
+            [f for f in all_frames if f not in selected_frames],
+            key=lambda f: avg_player_counts[f],
+            reverse=True
+        )
+        selected_frames.extend(remaining_frames[:num_frames - len(selected_frames)])
+
+    return selected_frames[:num_frames]
 
 async def evaluate_pending_responses(
     db_manager: DatabaseManager,
@@ -193,13 +251,21 @@ async def evaluate_pending_responses(
                 logger.info(f"Downloading video for challenge {challenge['challenge_id']}")
                 video_path = await validator.download_video(video_url)
 
-                # Generate random frames once for this challenge
-                frames_to_validate = validator.select_random_frames(video_path)
+                # Use the new function to select frames with sufficient player detections
+                frames_to_validate = await select_frames_with_players(
+                    validator,
+                    video_path,
+                    db_manager,
+                    challenge['challenge_id']
+                )
                 logger.info(f"Selected frames for validation: {frames_to_validate}")
 
                 # Pre-process reference counts for these frames
                 frame_cache = {}
                 frame_images = []
+                logger.info("Pre-processing frames and reference counts...")
+                
+                # First load all frames into cache
                 for frame_idx in frames_to_validate:
                     cap = cv2.VideoCapture(str(video_path))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -207,15 +273,46 @@ async def evaluate_pending_responses(
                     cap.release()
                     if ret:
                         frame_images.append(frame)
-                        frame_cache[frame_idx] = {'frame': frame}
+                        frame_cache[frame_idx] = {
+                            'frame': frame,
+                            'reference_counts': None  # Will be populated below
+                        }
 
                 # Get reference counts in batches for all frames at once
                 logger.info("Getting reference counts for all frames...")
-                reference_counts = await validator.get_reference_counts_batch(frame_images)
+                frames_to_process = []
+                for frame_idx, frame in zip(frames_to_validate, frame_images):
+                    frames_to_process.append({
+                        'encoded_image': validator.encode_image(frame),
+                        'frame_id': frame_idx
+                    })
                 
-                # Update frame cache with reference counts
-                for frame_idx, counts in zip(frames_to_validate, reference_counts):
-                    frame_cache[frame_idx]['reference_counts'] = counts
+                reference_results = await validator.vlm_processor.get_reference_counts_batch(frames_to_process, COUNT_PROMPT)
+                
+                # Process results and update frame cache
+                for frame_data, result in zip(frames_to_process, reference_results):
+                    frame_idx = frame_data['frame_id']
+                    try:
+                        if result:
+                            counts = json.loads(result)
+                            if isinstance(counts, dict):
+                                normalized = {}
+                                for key, value in counts.items():
+                                    key = key.lower()
+                                    if isinstance(value, (int, float)):
+                                        if "ball" in key:
+                                            normalized["ball"] = int(value)
+                                        elif "goalkeeper" in key:
+                                            normalized["goalkeeper"] = int(value)
+                                        elif "referee" in key:
+                                            normalized["referee"] = int(value)
+                                        elif "player" in key:
+                                            normalized["player"] = int(value)
+                                frame_cache[frame_idx]['reference_counts'] = normalized
+                                validator.frame_reference_counts[frame_idx] = normalized  # Store in validator cache
+                    except Exception as e:
+                        logger.error(f"Error processing reference counts for frame {frame_idx}: {str(e)}")
+                        frame_cache[frame_idx]['reference_counts'] = {}
 
                 logger.info("Starting parallel evaluation of responses...")
                 # Create tasks for parallel evaluation

@@ -19,6 +19,7 @@ from validator.challenge.challenge_types import (
 )
 from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
+from validator.utils.vlm_api import VLMProcessor
 
 # Add timeout constants
 OPENAI_TIMEOUT = 30.0  # seconds
@@ -53,272 +54,19 @@ def filter_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
     """Remove zero-coord keypoints; round others to 2 decimals."""
     return [optimize_coordinates(kp) for kp in keypoints if not (kp[0] == 0 and kp[1] == 0)]
 
-class RateLimiter:
-    def __init__(self, rate_limit: int):
-        self.rate_limit = rate_limit
-        self.tokens = rate_limit
-        self.last_update = datetime.now()
-        self.lock = asyncio.Lock()
-    
-    async def acquire(self):
-        async with self.lock:
-            now = datetime.now()
-            time_passed = (now - self.last_update).total_seconds()
-            self.tokens = min(self.rate_limit, self.tokens + time_passed * self.rate_limit)
-            
-            if self.tokens < 1:
-                wait_time = (1 - self.tokens) / self.rate_limit
-                await asyncio.sleep(wait_time)
-                self.tokens = 1
-            
-            self.tokens -= 1
-            self.last_update = now
-
 class GSRValidator:
     def __init__(self, openai_api_key: str, validator_hotkey: str):
         self.openai_api_key = openai_api_key
         self.validator_hotkey = validator_hotkey
         self.db_manager = None
         self._video_cache = {}
-        self.client = OpenAI(api_key=openai_api_key)
-        self.chutes_api_key = os.environ.get("API_KEY")
-        self.chutes_url = "https://chutes-opengvlab-internvl2-5-78b.chutes.ai/v1/chat/completions"
-        self.rate_limiter = RateLimiter(VLM_RATE_LIMIT)
+        self.vlm_processor = VLMProcessor(openai_api_key)
+        self.frame_reference_counts = {}  # Cache for reference counts
 
-    async def ask_vlm_batch(
-        self,
-        messages_list: List[List[Dict]],
-        max_tokens: int = 1000,
-        temperature: float = 0.2,
-        model_chutes: str = "OpenGVLab/InternVL2_5-78B",
-        model_openai: str = "gpt-4o"
-    ) -> List[Optional[str]]:
-        """
-        Process multiple VLM requests in batches with rate limiting.
-        """
-        results = []
-        for messages in messages_list:
-            await self.rate_limiter.acquire()
-            try:
-                result = await self.ask_vlm(messages, max_tokens, temperature, model_chutes, model_openai)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Batch VLM call error: {str(e)}")
-                results.append(None)
-        return results
-
-    async def get_reference_counts_batch(self, frames: List[np.ndarray]) -> List[Dict]:
-        """
-        Get reference counts for multiple frames in batches, including an explicit index
-        so we can match responses to the correct frames.
-        """
-        messages_list = []
-        for i, frame in enumerate(frames):
-            encoded = self.encode_image(frame)
-            messages = [
-                {"role": "system", "content": "You are an expert at counting objects in soccer match frames."},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Frame index {i}: {COUNT_PROMPT}\n"
-                                f"Please return counts as JSON in the form: "
-                                f"{{\"index\": {i}, \"player\": X, \"soccer ball\": Y, \"referee\": Z, \"goalkeeper\": W}}"
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"}
-                        }
-                    ]
-                }
-            ]
-            messages_list.append(messages)
-
-        # Process in batches
-        batch_size = VLM_BATCH_SIZE
-        results = []
-        for i in range(0, len(messages_list), batch_size):
-            batch = messages_list[i:i + batch_size]
-            batch_results = await self.ask_vlm_batch(batch)
-            results.extend(batch_results)
-
-        # Prepare a placeholder list so we can insert by index
-        processed_results = [{} for _ in frames]
-
-        # Process results
-        for content in results:
-            try:
-                if not content:
-                    continue
-                cleaned_content = self.clean_json_response(content)
-                counts = json.loads(cleaned_content)
-                if not isinstance(counts, dict):
-                    continue
-
-                # We expect an "index" field to ensure correct alignment
-                idx = counts.pop("index", None)
-                if idx is None or not (0 <= idx < len(processed_results)):
-                    continue
-
-                # Normalize the keys
-                normalized = {}
-                for key, value in counts.items():
-                    key_lower = key.lower()
-                    if isinstance(value, (int, float)):
-                        if "ball" in key_lower:
-                            normalized["ball"] = int(value)
-                        elif "goalkeeper" in key_lower:
-                            normalized["goalkeeper"] = int(value)
-                        elif "referee" in key_lower:
-                            normalized["referee"] = int(value)
-                        elif "player" in key_lower:
-                            normalized["player"] = int(value)
-
-                processed_results[idx] = normalized
-
-            except Exception as e:
-                logger.error(f"Error processing reference count result: {str(e)}")
-
-        return processed_results
-
-    async def ask_vlm(
-        self,
-        messages: List[Dict],
-        max_tokens: int = 1000,
-        temperature: float = 0.2,
-        model_chutes: str = "OpenGVLab/InternVL2_5-78B",
-        model_openai: str = "gpt-4o"
-    ) -> Optional[str]:
-        """
-        Single helper for VLM calls. Attempts Chutes first, then OpenAI fallback.
-        Returns the raw content string or None if all fail.
-        """
-        try:
-            async def _call():
-                payload = {"model": model_chutes, "messages": messages, "max_tokens": max_tokens}
-                if self.chutes_api_key:
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            resp = await client.post(
-                                self.chutes_url,
-                                json=payload,
-                                headers={"Authorization": self.chutes_api_key},
-                                timeout=30.0
-                            )
-                            resp.raise_for_status()
-                            return resp.json()["choices"][0]["message"]["content"]
-                    except Exception as e:
-                        logger.warning(f"Chutes API error, will fallback: {str(e)}")
-
-                try:
-                    openai_resp = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self.client.chat.completions.create,
-                            model=model_openai,
-                            messages=messages,
-                            max_tokens=max_tokens,
-                            temperature=temperature
-                        ),
-                        timeout=OPENAI_TIMEOUT
-                    )
-                    return openai_resp.choices[0].message.content
-                except Exception as e:
-                    logger.error(f"OpenAI fallback error: {str(e)}")
-                return None
-
-            return await asyncio.wait_for(_call(), timeout=OPENAI_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.error("VLM call timed out")
-        except Exception as e:
-            logger.error(f"VLM call error: {str(e)}")
-        return None
-
-    def clean_json_response(self, content: str) -> str:
-        """Enhanced cleaning of VLM responses."""
-        if not content:
-            return "[]"
-        
-        # Remove any markdown formatting
-        content = content.replace('```json', '').replace('```', '')
-        
-        # Remove newlines and extra spaces
-        content = ' '.join(content.split())
-        
-        # If it looks like an array but isn't properly formatted
-        if '[' in content and ']' in content:
-            try:
-                # Extract everything between the first [ and last ]
-                array_content = content[content.find('['):content.rfind(']')+1]
-                # Try parsing it
-                json.loads(array_content)
-                return array_content
-            except json.JSONDecodeError:
-                pass
-        
-        return content
-
-    async def get_reference_counts(self, frame: np.ndarray) -> Dict:
-        """
-        Count key entities in the frame.
-        Uses a system prompt, fallback handled by ask_vlm.
-        """
-        encoded = self.encode_image(frame)
-        messages = [
-            {"role": "system", "content": "You are an expert at counting objects in soccer match frames."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": COUNT_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "high"}
-                    }
-                ]
-            }
-        ]
-        try:
-            content = await self.ask_vlm(messages)
-            logger.info(f"VLM Response for reference counts: {content}")
-            if not content:
-                logger.warning("VLM returned empty content for reference counts")
-                return {}
-
-            cleaned_content = self.clean_json_response(content)
-            logger.info(f"Cleaned VLM Response: {cleaned_content}")
-            
-            try:
-                counts = json.loads(cleaned_content)
-                if not isinstance(counts, dict):
-                    logger.warning(f"VLM response is not a dictionary: {counts}")
-                    return {}
-                    
-                # Normalize the keys
-                normalized = {}
-                for key, value in counts.items():
-                    key = key.lower()
-                    if isinstance(value, (int, float)):
-                        if "ball" in key or "soccer ball" in key:
-                            normalized["soccer ball"] = int(value)
-                        elif "goalkeeper" in key:
-                            normalized["goalkeeper"] = int(value)
-                        elif "referee" in key:
-                            normalized["referee"] = int(value)
-                        elif "player" in key:
-                            normalized["player"] = int(value)
-                
-                logger.info(f"Normalized counts: {normalized}")
-                return normalized
-                
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse VLM response as JSON: {cleaned_content}")
-                return {}
-                
-        except Exception as e:
-            logger.error(f"Reference count error: {str(e)}")
-            return {}
+    def encode_image(self, image):
+        """Base64-encode an image."""
+        ok, buf = cv2.imencode('.jpg', image)
+        return base64.b64encode(buf).decode('utf-8') if ok else ""
 
     async def download_video(self, video_url: str) -> Path:
         """
@@ -376,56 +124,262 @@ class GSRValidator:
                         path.unlink()
                     raise ValueError(f"Failed to download: {str(e)}")
 
+    async def get_reference_counts(self, frame: np.ndarray) -> Dict:
+        """
+        Count key entities in the frame.
+        Uses a system prompt, fallback handled by ask_vlm.
+        """
+        encoded = self.encode_image(frame)
+        frames_data = [{
+            "encoded_image": encoded,
+            "frame_id": "single"
+        }]
+        
+        results = await self.vlm_processor.get_reference_counts_batch(frames_data, COUNT_PROMPT)
+        if not results or not results[0]:
+            logger.warning("VLM returned empty content for reference counts")
+            return {}
+            
+        try:
+            cleaned_content = results[0]
+            counts = json.loads(cleaned_content)
+            if not isinstance(counts, dict):
+                logger.warning(f"VLM response is not a dictionary: {counts}")
+                return {}
+                
+            # Normalize the keys
+            normalized = {}
+            for key, value in counts.items():
+                key = key.lower()
+                if isinstance(value, (int, float)):
+                    if "ball" in key or "soccer ball" in key:
+                        normalized["soccer ball"] = int(value)
+                    elif "goalkeeper" in key:
+                        normalized["goalkeeper"] = int(value)
+                    elif "referee" in key:
+                        normalized["referee"] = int(value)
+                    elif "player" in key:
+                        normalized["player"] = int(value)
+            
+            logger.info(f"Normalized counts: {normalized}")
+            return normalized
+            
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse VLM response as JSON: {cleaned_content}")
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Reference count error: {str(e)}")
+            return {}
+
+    async def validate_bbox_content_batch(self, images: List[np.ndarray], expected_class: str) -> List[float]:
+        """
+        Validate multiple bounding boxes in one call with rate limiting.
+        """
+        if not images:
+            return []
+
+        # Prepare batch data
+        batch_data = []
+        for i, img in enumerate(images):
+            encoded = self.encode_image(img)
+            if encoded:
+                batch_data.append({
+                    "encoded_image": encoded,
+                    "bbox_id": i
+                })
+
+        return await self.vlm_processor.validate_bbox_content_batch(batch_data, expected_class)
+
     async def validate_keypoints(self, frame: np.ndarray, keypoints: list, frame_idx: int) -> float:
         """
-        Validate keypoints. Attempts Chutes first, then OpenAI fallback.
+        Validate keypoints. Uses batched VLM processor.
         Expects a numeric score from 0.0 to 1.0.
         """
+        if not keypoints:
+            logger.info(f"No keypoints to validate for frame {frame_idx}")
+            return 0.0
+
+        # Filter out zero coordinates and round to 2 decimals
+        valid_keypoints = filter_keypoints(keypoints)
+        if not valid_keypoints:
+            logger.info(f"No valid keypoints after filtering for frame {frame_idx}")
+            return 0.0
+
+        #logger.info(f"Validating {len(valid_keypoints)} keypoints for frame {frame_idx}")
+
         kp_frame = frame.copy()
-        for (x, y) in keypoints:
-            if x != 0 and y != 0:
+        for (x, y) in valid_keypoints:
                 cv2.circle(kp_frame, (int(x), int(y)), 5, COLORS["keypoint"], -1)
 
         ref_path = Path(__file__).parent / "pitch-keypoints.jpg"
         ref_img = cv2.imread(str(ref_path))
-
-        success_ref, ref_buf = cv2.imencode('.jpg', ref_img)
-        success_kp, kp_buf = cv2.imencode('.jpg', kp_frame)
-        if not (success_ref and success_kp):
+        if ref_img is None:
+            logger.error(f"Failed to load reference keypoint image from {ref_path}")
             return 0.0
 
-        ref_b64 = base64.b64encode(ref_buf).decode('utf-8')
-        kp_b64 = base64.b64encode(kp_buf).decode('utf-8')
+        ref_encoded = self.encode_image(ref_img)
+        kp_encoded = self.encode_image(kp_frame)
+        
+        if not (ref_encoded and kp_encoded):
+            logger.error("Failed to encode reference or keypoint images")
+            return 0.0
 
-        text_prompt = (
-            "Here are two images:\n1) Reference pitch keypoints.\n2) Predicted keypoints.\n"
-            "Rate similarity from 0.0 (bad) to 1.0 (perfect). Return only the numeric value."
-        )
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ref_b64}"}},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{kp_b64}"}}
-                ]
-            }
-        ]
+        frames_data = [{
+            "reference_image": ref_encoded,
+            "keypoint_image": kp_encoded,
+            "frame_id": frame_idx
+        }]
+
         try:
-            content = await self.ask_vlm(messages, max_tokens=10)
-            if not content:
-                return 0.0
-            content = self.clean_json_response(content)
-            return max(0.0, min(1.0, float(content)))
+            logger.info(f"Sending keypoint validation request for frame {frame_idx}")
+            results = await self.vlm_processor.validate_keypoints_batch(frames_data, VALIDATION_PROMPT)
+            score = results[0] if results else 0.0
+            logger.info(f"Keypoint validation score for frame {frame_idx}: {score}")
+            return score
         except Exception as e:
-            logger.error(f"Keypoint validation error: {str(e)}")
+            logger.error(f"Error validating keypoints for frame {frame_idx}: {str(e)}")
             return 0.0
 
-    def resize_frame(self, frame: np.ndarray, target_width: int = 400) -> np.ndarray:
-        """Keep aspect ratio on resize."""
-        h, w = frame.shape[:2]
-        aspect = w / h
-        return cv2.resize(frame, (target_width, int(target_width / aspect)))
+    async def validate_frame_detections(
+        self,
+        frame: np.ndarray,
+        detections: dict,
+        frame_idx: int,
+        challenge_id: str,
+        node_id: int,
+        reference_counts: Dict = None,
+        response_id: str = None
+    ) -> dict:
+        """
+        Validate detections in a single frame with timeout protection.
+        """
+        # Initialize results with default values
+        results = {
+            "objects": [],
+            "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
+            "scores": {
+                "keypoint_score": 0.0,
+                "bbox_score": 0.0,
+                "count_match_score": 0.0,
+                "final_score": 0.0
+            },
+            "debug_frame_path": "",
+            "timing": {}
+        }
+
+        try:
+            async def _process_frame():
+                start = datetime.now()
+                logger.info(f"Validating frame {frame_idx} (challenge {challenge_id}, node {node_id})")
+
+                # Run validations concurrently
+                filtered = self.filter_detections(detections, frame.shape)
+                kpts = filtered.get("keypoints", [])
+                #logger.info(f"Processing {len(kpts)} keypoints for frame {frame_idx}")
+                kpt_score_task = self.validate_keypoints(frame, kpts, frame_idx)
+
+                # Process objects first
+                class_map = {}
+                for obj in filtered.get("objects", []):
+                    cls = self.get_class_name(obj["class_id"])
+                    x1, y1, x2, y2 = obj["bbox"]
+                    crop = frame[y1:y2, x1:x2]
+                    if cls not in class_map:
+                        class_map[cls] = {"images": [], "objs": []}
+                    class_map[cls]["images"].append(crop)
+                    class_map[cls]["objs"].append(obj)
+
+                # Process each class with rate limiting
+                obj_scores = []
+                for cls, group in class_map.items():
+                    confs = await self.validate_bbox_content_batch(group["images"], cls)
+                    for ob, c in zip(group["objs"], confs):
+                        obj_scores.append({"class": cls, "score": c})
+                        results["objects"].append({
+                            "bbox_idx": ob["id"],
+                            "class": cls,
+                            "class_id": ob["class_id"],
+                            "probability": c
+                        })
+
+                # Calculate scores
+                box_score = self.calculate_bbox_confidence_score(results)
+                
+                # Get reference counts - use cached version if available
+                ref_counts = None
+                if frame_idx in self.frame_reference_counts:
+                    ref_counts = self.frame_reference_counts[frame_idx]
+                elif reference_counts:
+                    ref_counts = reference_counts
+                else:
+                    # Only fetch if absolutely necessary
+                    logger.warning(f"No cached reference counts for frame {frame_idx}, fetching new...")
+                    ref_counts = await self.get_reference_counts(frame)
+                    self.frame_reference_counts[frame_idx] = ref_counts
+                    
+                kpt_score = await kpt_score_task
+                results["keypoints"] = {
+                    "score": kpt_score,
+                    "points": kpts,
+                    "visualization_path": ""
+                }
+
+                count_val = self.compare_with_reference_counts(ref_counts, results)
+                final_score = self.calculate_final_score(kpt_score, box_score, count_val["match_score"])
+
+                # Save debug visualization
+                ann = self.draw_annotations(frame, filtered)
+                ann_resized = self.resize_frame(ann, target_width=400)
+
+                current_date = datetime.now().strftime("%Y%m%d")
+                dbg_dir = Path("debug_frames") / current_date
+                dbg_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Include response_id in filename if available
+                filename_parts = [
+                    f"challenge_{challenge_id}",
+                    f"node_{node_id}",
+                    f"frame_{frame_idx}"
+                ]
+                if response_id:
+                    filename_parts.insert(1, f"resp_{response_id}")  # Insert after challenge_id
+                    
+                dbg_path = dbg_dir / f"{('_'.join(filename_parts))}_{ts}.jpg"
+                cv2.imwrite(str(dbg_path), ann_resized)
+
+                # Update results
+                results["scores"].update({
+                    "keypoint_score": kpt_score,
+                    "bbox_score": box_score,
+                    "count_match_score": count_val["match_score"],
+                    "final_score": final_score
+                })
+                results["debug_frame_path"] = str(dbg_path)
+                results["count_validation"] = count_val
+                results["scoring_details"] = {
+                    "keypoint_score": {"score": kpt_score, "weight": 0.4},
+                    "bbox_score": {"score": box_score, "weight": 0.4, "object_scores": obj_scores},
+                    "count_match_score": {
+                        "score": count_val["match_score"],
+                        "weight": 0.2,
+                        "reference_counts": ref_counts,
+                        "detected_counts": count_val["high_confidence_counts"]
+                    }
+                }
+                results["timing"] = {
+                    "total_time": (datetime.now() - start).total_seconds()
+                }
+
+            await asyncio.wait_for(_process_frame(), timeout=FRAME_TIMEOUT)
+
+        except asyncio.TimeoutError:
+            logger.error(f"Frame {frame_idx} validation timed out")
+        except Exception as e:
+            logger.error(f"Frame {frame_idx} validation error: {str(e)}")
+
+        return results
 
     async def evaluate_response(
         self,
@@ -448,27 +402,57 @@ class GSRValidator:
         # Use provided frames or select new ones
         if frames_to_validate is None:
             frames_to_validate = self.select_random_frames(video_path)
-        logger.info(f"Evaluating frames: {frames_to_validate}")
+        #logger.info(f"Evaluating frames: {frames_to_validate}")
+
+        # Pre-fetch reference counts for all frames
+        if frame_cache is None:
+            frame_cache = {}
+            
+        frames_to_process = []
+        for frame_idx in frames_to_validate:
+            if frame_idx not in frame_cache:
+                cap = cv2.VideoCapture(str(video_path))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                cap.release()
+                if ret:
+                    frame_cache[frame_idx] = {'frame': frame}
+                    frames_to_process.append({
+                        'encoded_image': self.encode_image(frame),
+                        'frame_id': frame_idx
+                    })
+
+        if frames_to_process:
+            reference_results = await self.vlm_processor.get_reference_counts_batch(frames_to_process, COUNT_PROMPT)
+            for frame_data, result in zip(frames_to_process, reference_results):
+                frame_idx = frame_data['frame_id']
+                try:
+                    if result:
+                        counts = json.loads(result)
+                        if isinstance(counts, dict):
+                            normalized = {}
+                            for key, value in counts.items():
+                                key = key.lower()
+                                if isinstance(value, (int, float)):
+                                    if "ball" in key:
+                                        normalized["ball"] = int(value)
+                                    elif "goalkeeper" in key:
+                                        normalized["goalkeeper"] = int(value)
+                                    elif "referee" in key:
+                                        normalized["referee"] = int(value)
+                                    elif "player" in key:
+                                        normalized["player"] = int(value)
+                            self.frame_reference_counts[frame_idx] = normalized
+                except Exception as e:
+                    logger.error(f"Error processing reference counts for frame {frame_idx}: {str(e)}")
 
         tasks = []
         for frame_idx in frames_to_validate:
             try:
-                # Use cached frame and reference counts if available
-                if frame_cache and frame_idx in frame_cache:
-                    frame = frame_cache[frame_idx]['frame']
-                    ref_counts = frame_cache[frame_idx].get('reference_counts')
-                else:
-                    # Read frame from video
-                    cap = cv2.VideoCapture(str(video_path))
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                    ret, frame = cap.read()
-                    cap.release()
-                    if not ret:
-                        logger.error(f"Failed to read frame {frame_idx}")
-                        continue
-                    ref_counts = None
-
+                frame = frame_cache[frame_idx]['frame']
                 frame_data = response.frames.get(str(frame_idx), {})
+                ref_counts = self.frame_reference_counts.get(frame_idx)
+                
                 tasks.append((frame_idx, asyncio.create_task(
                     self.validate_frame_detections(
                         frame=frame,
@@ -500,7 +484,8 @@ class GSRValidator:
                         },
                         "reference_counts": data["count_validation"]["reference_counts"],
                         "detected_counts": data["count_validation"]["high_confidence_counts"],
-                        "count_matches": data["count_validation"]["count_matches"]
+                        "count_matches": data["count_validation"]["count_matches"],
+                        "scoring_details": data["scoring_details"]
                     }
                     self.db_manager.store_frame_evaluation(
                         response_id=response.response_id,
@@ -528,16 +513,27 @@ class GSRValidator:
         # Gather results
         total_scores, frame_scores, details = [], {}, []
         for item in frame_evals:
-            frm_num = item["frame_number"]
-            final_score = item["scores"]["final_score"]
-            total_scores.append(final_score)
-            frame_scores[frm_num] = final_score
-            details.append({
-                "frame_number": frm_num,
-                "debug_frame_path": item["debug_frame_path"],
-                "scores": item["scores"],
-                "scoring_details": item["scoring_details"]
-            })
+            try:
+                frm_num = item["frame_number"]
+                final_score = item["scores"]["final_score"]
+                total_scores.append(final_score)
+                frame_scores[frm_num] = final_score
+                
+                # Extract scoring details safely
+                frame_detail = {
+                    "frame_number": frm_num,
+                    "debug_frame_path": item.get("debug_frame_path", ""),
+                    "scores": item.get("scores", {}),
+                }
+                
+                # Only add scoring_details if it exists
+                if "scoring_details" in item:
+                    frame_detail["scoring_details"] = item["scoring_details"]
+                    
+                details.append(frame_detail)
+            except Exception as e:
+                logger.error(f"Error processing frame evaluation result for frame {frm_num}: {str(e)}")
+                continue
 
         avg_score = sum(total_scores) / len(total_scores) if total_scores else 0.0
         summary = {
@@ -545,79 +541,15 @@ class GSRValidator:
             "challenge_id": challenge.challenge_id,
             "average_score": avg_score,
             "frame_count": len(frame_evals),
-            "frame_details": [
-                {
-                    "frame_number": d["frame_number"],
-                    "debug_frame_path": d["debug_frame_path"],
-                    "scores": d["scores"]
-                } for d in details
-            ]
+            "frame_details": details
         }
-        logger.info(f"Validation Results:\n{json.dumps(summary, indent=2)}")
+        #logger.info(f"Validation Results:\n{json.dumps(summary, indent=2)}")
 
         return ValidationResult(
             score=avg_score,
             frame_scores=frame_scores,
             feedback=details
         )
-
-    # async def evaluate_frame(
-    #     self,
-    #     frame_number: int,
-    #     frame: np.ndarray,
-    #     frame_data: dict,
-    #     challenge: GSRChallenge,
-    #     response: GSRResponse
-    # ) -> float:
-    #     """
-    #     Evaluate one frame's data. (Kept for reference or modular usage.)
-    #     """
-    #     ref_counts = await self.get_reference_counts(frame)
-    #     filtered = self.filter_detections(frame_data, frame.shape)
-    #     bbox_score = await self.evaluate_bboxes(frame, filtered.get("objects", []))
-    #     kpt_score = await self.validate_keypoints(frame, filtered.get("keypoints", []), frame_number)
-    #     count_val = self.compare_with_reference_counts(ref_counts, {"objects": [], "keypoints": []})
-    #     return self.calculate_final_score(kpt_score, bbox_score, count_val["match_score"])
-
-    def filter_detections(self, detections: Dict, shape: Tuple[int, int]) -> Dict:
-        """Clamp bboxes, keep valid ones, preserve keypoints."""
-        valid = {"objects": [], "keypoints": detections.get("keypoints", [])}
-        for obj in detections.get("objects", []):
-            bbox = self.validate_bbox_coordinates(obj["bbox"], shape, obj["class_id"])
-            if bbox:
-                valid["objects"].append({**obj, "bbox": bbox})
-        return valid
-
-    async def validate_bbox_content(self, image: np.ndarray, expected_class: str) -> float:
-        """
-        Validate a single bounding box. Returns probability (0.0..1.0) that
-        the cropped image contains the class in question.
-        """
-        ok, buf = cv2.imencode('.jpg', image)
-        if not ok:
-            return 0.0
-        b64 = base64.b64encode(buf).decode('utf-8')
-        prompt = (
-            f"This image supposedly has a {expected_class} in a soccer context. "
-            "Rate probability [0.0..1.0]. Return only the numeric probability."
-        )
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                ]
-            }
-        ]
-        content = await self.ask_vlm(messages, max_tokens=10)
-        if not content:
-            return 0.0
-        content = self.clean_json_response(content)
-        try:
-            return max(0.0, min(1.0, float(content)))
-        except ValueError:
-            return 0.0
 
     def calculate_bbox_confidence_score(self, results: dict) -> float:
         """
@@ -755,245 +687,39 @@ class GSRValidator:
     def select_random_frames(self, video_path: Path, num_frames: int = None) -> List[int]:
         """
         Randomly pick frames from a video, skipping start/end buffer.
+        
+        Args:
+            video_path: Path to the video file
+            num_frames: Number of frames to select. If None, uses FRAMES_TO_VALIDATE from config
+            
+        Returns:
+            List of selected frame numbers
         """
         num_frames = num_frames or FRAMES_TO_VALIDATE
         cap = cv2.VideoCapture(str(video_path))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        buffer = min(30, total // 10)
-        frange = range(buffer, max(buffer, total - buffer))
-        frames = random.sample(frange, min(num_frames, len(frange))) if frange else []
-        return sorted(frames)
-
-    def encode_image(self, image):
-        """Base64-encode an image."""
-        ok, buf = cv2.imencode('.jpg', image)
-        return base64.b64encode(buf).decode('utf-8') if ok else ""
-
-    async def validate_bbox_content_batch(self, images: List[np.ndarray], expected: str) -> List[float]:
-        """
-        Validate multiple bounding boxes in one call with rate limiting.
-        """
-        if not images:
-            return []
-
-        batch_size = min(len(images), VLM_BATCH_SIZE)
-        batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
+        # Calculate buffer size - either 30 frames or 10% of total, whichever is smaller
+        buffer = min(5, total // 2)
         
-        all_probabilities = []
-        current_index = 0
-
-        for batch in batches:
-            await self.rate_limiter.acquire()
-            try:
-                # Modified prompt to be more explicit about response format
-                content_list = [
-                    {
-                        "type": "text",
-                        "text": (
-                            "You are analyzing multiple bounding boxes from a soccer match frame.\n"
-                            f"For each box, determine if it contains a {expected}.\n"
-                            "CRITICAL: Respond with a single JSON array containing ONLY probability values [0..1].\n"
-                            "Example response for 3 boxes: [0.95, 0.82, 0.1]\n"
-                            f"Now analyzing {len(batch)} boxes:"
-                        )
-                    }
-                ]
-                
-                # Add individual box prompts
-                for i in range(len(batch)):
-                    content_list.append({
-                        "type": "text",
-                        "text": f"Box {i+1}/{len(batch)}: Determine probability [0..1] that this contains a {expected}."
-                    })
-                
-                messages = [{"role": "user", "content": content_list}]
-                
-                # Add images
-                for img in batch:
-                    ok, buf = cv2.imencode('.jpg', img)
-                    if not ok:
-                        continue
-                    b64 = base64.b64encode(buf).decode('utf-8')
-                    messages[0]["content"].append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-                    })
-
-                api_response = await self.ask_vlm(messages, max_tokens=100)
-                
-                if not api_response:
-                    all_probabilities.extend([0.0] * len(batch))
-                    current_index += len(batch)
-                    continue
-
-                # Enhanced parsing logic
-                try:
-                    # Clean and parse the response
-                    cleaned = self.clean_json_response(api_response)
-                    
-                    # Try parsing as a JSON array first
-                    try:
-                        probabilities = json.loads(cleaned)
-                        if isinstance(probabilities, list):
-                            parsed_probs = []
-                            for p in probabilities:
-                                if isinstance(p, (int, float)):
-                                    parsed_probs.append(max(0.0, min(1.0, float(p))))
-                                else:
-                                    parsed_probs.append(0.0)
-                            all_probabilities.extend(parsed_probs)
-                            continue
-                    except json.JSONDecodeError:
-                        pass
-                    
-                    # Fallback: try to extract numbers from the response
-                    import re
-                    numbers = re.findall(r'0\.\d+|\d+\.?\d*', cleaned)
-                    if numbers:
-                        parsed_probs = [max(0.0, min(1.0, float(n))) for n in numbers[:len(batch)]]
-                        all_probabilities.extend(parsed_probs)
-                    else:
-                        all_probabilities.extend([0.0] * len(batch))
-                        
-                except Exception as e:
-                    logger.error(f"Batch parse error: {str(e)}")
-                    all_probabilities.extend([0.0] * len(batch))
-                    
-            except Exception as e:
-                logger.error(f"Batch validation error: {str(e)}")
-                all_probabilities.extend([0.0] * len(batch))
-
-            current_index += len(batch)
-            await asyncio.sleep(0.1)
-
-        # Ensure we return exactly len(images) probabilities
-        return all_probabilities[:len(images)]
-
-    async def validate_frame_detections(
-        self,
-        frame: np.ndarray,
-        detections: dict,
-        frame_idx: int,
-        challenge_id: str,
-        node_id: int,
-        reference_counts: Dict = None,
-        response_id: str = None
-    ) -> dict:
-        """
-        Validate detections in a single frame with timeout protection.
-        """
-        # Initialize results with default values
-        results = {
-            "objects": [],
-            "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
-            "scores": {
-                "keypoint_score": 0.0,
-                "bbox_score": 0.0,
-                "count_match_score": 0.0,
-                "final_score": 0.0
-            },
-            "debug_frame_path": "",
-            "timing": {}
-        }
-
-        try:
-            async def _process_frame():
-                start = datetime.now()
-                logger.info(f"Validating frame {frame_idx} (challenge {challenge_id}, node {node_id})")
-
-                # Run validations concurrently
-                filtered = self.filter_detections(detections, frame.shape)
-                kpts = filtered.get("keypoints", [])
-                kpt_score_task = self.validate_keypoints(frame, kpts, frame_idx)
-
-                # Process objects first
-                class_map = {}
-                for obj in filtered.get("objects", []):
-                    cls = self.get_class_name(obj["class_id"])
-                    x1, y1, x2, y2 = obj["bbox"]
-                    crop = frame[y1:y2, x1:x2]
-                    if cls not in class_map:
-                        class_map[cls] = {"images": [], "objs": []}
-                    class_map[cls]["images"].append(crop)
-                    class_map[cls]["objs"].append(obj)
-
-                # Process each class with rate limiting
-                obj_scores = []
-                for cls, group in class_map.items():
-                    confs = await self.validate_bbox_content_batch(group["images"], cls)
-                    for ob, c in zip(group["objs"], confs):
-                        obj_scores.append({"class": cls, "score": c})
-                        results["objects"].append({
-                            "bbox_idx": ob["id"],
-                            "class": cls,
-                            "class_id": ob["class_id"],
-                            "probability": c
-                        })
-
-                # Calculate scores
-                box_score = self.calculate_bbox_confidence_score(results)
-                
-                # Get reference counts after object validation
-                ref_counts = reference_counts or await self.get_reference_counts(frame)
-                kpt_score = await kpt_score_task
-
-                count_val = self.compare_with_reference_counts(ref_counts, results)
-                final_score = self.calculate_final_score(kpt_score, box_score, count_val["match_score"])
-
-                # Save debug visualization
-                ann = self.draw_annotations(frame, filtered)
-                ann_resized = self.resize_frame(ann, target_width=400)
-
-                current_date = datetime.now().strftime("%Y%m%d")
-                dbg_dir = Path("debug_frames") / current_date
-                dbg_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                # Include response_id in filename if available
-                filename_parts = [
-                    f"challenge_{challenge_id}",
-                    f"node_{node_id}",
-                    f"frame_{frame_idx}"
-                ]
-                if response_id:
-                    filename_parts.insert(1, f"resp_{response_id}")  # Insert after challenge_id
-                    
-                dbg_path = dbg_dir / f"{('_'.join(filename_parts))}_{ts}.jpg"
-                cv2.imwrite(str(dbg_path), ann_resized)
-
-                # Update results
-                results["scores"].update({
-                    "keypoint_score": kpt_score,
-                    "bbox_score": box_score,
-                    "count_match_score": count_val["match_score"],
-                    "final_score": final_score
-                })
-                results["debug_frame_path"] = str(dbg_path)
-                results["count_validation"] = count_val
-                results["scoring_details"] = {
-                    "keypoint_score": {"score": kpt_score, "weight": 0.4},
-                    "bbox_score": {"score": box_score, "weight": 0.4, "object_scores": obj_scores},
-                    "count_match_score": {
-                        "score": count_val["match_score"],
-                        "weight": 0.2,
-                        "reference_counts": ref_counts,
-                        "detected_counts": count_val["high_confidence_counts"]
-                    }
-                }
-                results["timing"] = {
-                    "total_time": (datetime.now() - start).total_seconds()
-                }
-
-            await asyncio.wait_for(_process_frame(), timeout=FRAME_TIMEOUT)
-
-        except asyncio.TimeoutError:
-            logger.error(f"Frame {frame_idx} validation timed out")
-        except Exception as e:
-            logger.error(f"Frame {frame_idx} validation error: {str(e)}")
-
-        return results
+        # Ensure we have enough frames to sample from
+        if total <= (2 * buffer):
+            logger.warning(f"Video too short ({total} frames) for buffer size {buffer}")
+            buffer = total // 4  # Use 25% of total as buffer if video is very short
+            
+        # Calculate valid frame range
+        start_frame = buffer
+        end_frame = max(buffer, total - buffer)
+        valid_range = range(start_frame, end_frame)
+        
+        if len(valid_range) < num_frames:
+            logger.warning(f"Not enough frames ({len(valid_range)}) to select {num_frames} samples")
+            num_frames = len(valid_range)
+            
+        frames = random.sample(valid_range, num_frames) if valid_range else []
+        logger.info(f"Selected {len(frames)} frames from {total}")
+        return sorted(frames)
 
     def draw_annotations(self, frame: np.ndarray, detections: dict) -> np.ndarray:
         """Draw bounding boxes and keypoints onto the frame."""
@@ -1047,3 +773,18 @@ class GSRValidator:
         except Exception as e:
             logger.error(f"BBox validation error: {str(e)}")
             return None
+
+    def resize_frame(self, frame: np.ndarray, target_width: int = 400) -> np.ndarray:
+        """Keep aspect ratio on resize."""
+        h, w = frame.shape[:2]
+        aspect = w / h
+        return cv2.resize(frame, (target_width, int(target_width / aspect)))
+
+    def filter_detections(self, detections: Dict, shape: Tuple[int, int]) -> Dict:
+        """Clamp bboxes, keep valid ones, preserve keypoints."""
+        valid = {"objects": [], "keypoints": detections.get("keypoints", [])}
+        for obj in detections.get("objects", []):
+            bbox = self.validate_bbox_coordinates(obj["bbox"], shape, obj["class_id"])
+            if bbox:
+                valid["objects"].append({**obj, "bbox": bbox})
+        return valid

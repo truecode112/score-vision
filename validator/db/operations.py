@@ -961,3 +961,27 @@ class DatabaseManager:
             raise
         finally:
             conn.close()
+
+    def get_sample_responses(self, challenge_id: str, sample_size: int) -> List[Dict]:
+        """
+        Get a sample of responses for a given challenge.
+        """
+        conn = self.get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT response_id, response_data
+                FROM responses
+                WHERE challenge_id = ?
+                  AND response_data IS NOT NULL
+                ORDER BY RANDOM()
+                LIMIT ?
+            """, (challenge_id, sample_size))
+            
+            return [dict(row) for row in cursor.fetchall()]
+            
+        finally:
+            cursor.close()
+            conn.close()
