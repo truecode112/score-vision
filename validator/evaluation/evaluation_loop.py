@@ -526,6 +526,8 @@ async def run_evaluation_loop(
     
     while True:
         try:
+            logger.info("Starting new evaluation loop iteration")
+            
             # Get pending challenges
             conn = db_manager.get_connection()
             conn.row_factory = sqlite3.Row
@@ -558,16 +560,21 @@ async def run_evaluation_loop(
                 
             logger.info(f"Processing challenge {challenge['challenge_id']} with {challenge['pending_count']} responses")
             
-            # Process the challenge
-            await evaluate_pending_responses(
-                validator=validator,
-                db_manager=db_manager,
-                challenge=dict(challenge)
-            )
+            try:
+                # Process the challenge
+                await evaluate_pending_responses(
+                    validator=validator,
+                    db_manager=db_manager,
+                    challenge=dict(challenge)
+                )
+            except Exception as e:
+                logger.error(f"Error processing challenge {challenge['challenge_id']}: {str(e)}")
+                # Continue to next iteration even if this challenge failed
             
-            # Sleep before next iteration
+            logger.info("Completed evaluation iteration, sleeping before next check")
             await asyncio.sleep(sleep_interval)
             
         except Exception as e:
             logger.error(f"Error in evaluation loop: {str(e)}")
             await asyncio.sleep(sleep_interval)
+            continue  # Ensure we continue the loop after any error
