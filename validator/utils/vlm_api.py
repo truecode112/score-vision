@@ -17,7 +17,7 @@ BATCH_SIZE = 30  # Increased from 10
 RETRY_ATTEMPTS = 3
 COOLDOWN_AFTER_RATE_LIMIT = 15  # seconds
 SLEEP_ON_BATCH_FAILURE = 1  # seconds
-API_TIMEOUT = 45  # seconds - increased from 30s for keypoint validation
+API_TIMEOUT = 45  # seconds
 
 @dataclass
 class StatusTracker:

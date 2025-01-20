@@ -169,10 +169,31 @@ class EvaluationQueue:
             
     async def stop_processing(self):
         """Stop all workers and clean up."""
+        logger.info("Stopping evaluation queue processing...")
         self.processing = False
+        
         if self.active_tasks:
-            await asyncio.gather(*self.active_tasks)
-        self.active_tasks.clear()
+            try:
+                # Wait for tasks with a timeout
+                done, pending = await asyncio.wait(
+                    self.active_tasks,
+                    timeout=30  # 30 second timeout
+                )
+                
+                # Cancel any pending tasks
+                for task in pending:
+                    logger.warning("Cancelling pending worker task that didn't complete in time")
+                    task.cancel()
+                    
+                # Wait briefly for cancelled tasks
+                if pending:
+                    await asyncio.wait(pending, timeout=5)
+                    
+            except Exception as e:
+                logger.error(f"Error during worker cleanup: {str(e)}")
+            finally:
+                self.active_tasks.clear()
+                logger.info("Evaluation queue cleanup completed")
 
 async def _evaluate_single_response(
     validator: GSRValidator,
@@ -310,6 +331,7 @@ async def evaluate_pending_responses(
     challenge: Dict[str, Any]
 ) -> None:
     """Evaluate all pending responses for a challenge using the worker pool."""
+    eval_queue = None
     try:
         # Initialize evaluation queue
         eval_queue = EvaluationQueue(validator)
@@ -505,12 +527,16 @@ async def evaluate_pending_responses(
             logger.info(f"Completed processing all {len(scores)} responses for challenge {challenge['challenge_id']}")
 
         # Cleanup
+        logger.info("Starting evaluation queue cleanup...")
         await eval_queue.stop_processing()
+        logger.info("Evaluation queue cleanup completed, continuing with next iteration...")
 
     except Exception as e:
         logger.error(f"Error in evaluate_pending_responses: {str(e)}")
-        if 'eval_queue' in locals():
+        if eval_queue:
+            logger.info("Cleaning up evaluation queue after error...")
             await eval_queue.stop_processing()
+            logger.info("Cleanup completed after error")
 
 async def run_evaluation_loop(
     db_path: str,
@@ -520,69 +546,91 @@ async def run_evaluation_loop(
     sleep_interval: int = 60
 ) -> None:
     """Entrypoint that sets up the DB, validator, and runs the loop."""
-    db_manager = DatabaseManager(db_path)
-    validator = GSRValidator(openai_api_key=openai_api_key, validator_hotkey=validator_hotkey)
-    validator.db_manager = db_manager  # Let the validator store frame-level evaluations
-    iteration = 0
-    
-    while True:
-        try:
-            iteration += 1
-            logger.info(f"Starting evaluation loop iteration {iteration}")
-            
-            # Get pending challenges
-            conn = db_manager.get_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
+    try:
+        logger.info("Initializing evaluation loop...")
+        db_manager = DatabaseManager(db_path)
+        validator = GSRValidator(openai_api_key=openai_api_key, validator_hotkey=validator_hotkey)
+        validator.db_manager = db_manager  # Let the validator store frame-level evaluations
+        iteration = 0
+        
+        while True:
             try:
-                logger.info("Checking for challenges ready for evaluation...")
-                # Get challenges ready for evaluation
-                cursor.execute("""
-                    SELECT DISTINCT c.challenge_id, c.video_url, c.type AS challenge_type, 
-                           COUNT(r.response_id) as pending_count,
-                           MIN(r.received_at) as earliest_received
-                    FROM responses r
-                    JOIN challenges c ON r.challenge_id = c.challenge_id
-                    WHERE r.evaluated = FALSE
-                      AND datetime(r.received_at) <= datetime('now', '-' || ? || ' minutes')
-                    GROUP BY c.challenge_id, c.video_url, c.type
-                    LIMIT 1
-                """, (VALIDATION_DELAY.total_seconds() / 60,))
+                iteration += 1
+                logger.info(f"Starting evaluation loop iteration {iteration}")
+                logger.info("Getting database connection...")
                 
-                challenge = cursor.fetchone()
+                # Get pending challenges
+                conn = db_manager.get_connection()
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
                 
-            finally:
-                cursor.close()
-                conn.close()
-            
-            if not challenge:
-                logger.info(f"No challenges ready for evaluation (iteration {iteration})")
-                logger.info(f"Sleeping for {sleep_interval} seconds before next check...")
+                try:
+                    logger.info("Checking for challenges ready for evaluation...")
+                    # Get challenges ready for evaluation
+                    cursor.execute("""
+                        SELECT DISTINCT c.challenge_id, c.video_url, c.type AS challenge_type, 
+                               COUNT(r.response_id) as pending_count,
+                               MIN(r.received_at) as earliest_received
+                        FROM responses r
+                        JOIN challenges c ON r.challenge_id = c.challenge_id
+                        WHERE r.evaluated = FALSE
+                          AND datetime(r.received_at) <= datetime('now', '-' || ? || ' minutes')
+                        GROUP BY c.challenge_id, c.video_url, c.type
+                        LIMIT 1
+                    """, (VALIDATION_DELAY.total_seconds() / 60,))
+                    
+                    challenge = cursor.fetchone()
+                    
+                except Exception as e:
+                    logger.error(f"Database error while checking for challenges: {str(e)}")
+                    raise
+                finally:
+                    logger.info("Closing database cursor and connection...")
+                    cursor.close()
+                    conn.close()
+                
+                if not challenge:
+                    logger.info(f"No challenges ready for evaluation (iteration {iteration})")
+                    logger.info(f"Preparing to sleep for {sleep_interval} seconds...")
+                    sleep_start = time.time()
+                    await asyncio.sleep(sleep_interval)
+                    sleep_duration = time.time() - sleep_start
+                    logger.info(f"Waking up after sleeping for {sleep_duration:.1f} seconds (iteration {iteration})")
+                    continue
+                    
+                logger.info(f"Processing challenge {challenge['challenge_id']} with {challenge['pending_count']} responses (iteration {iteration})")
+                
+                try:
+                    # Process the challenge
+                    logger.info("Starting evaluate_pending_responses...")
+                    await evaluate_pending_responses(
+                        validator=validator,
+                        db_manager=db_manager,
+                        challenge=dict(challenge)
+                    )
+                    logger.info(f"Successfully completed challenge processing (iteration {iteration})")
+                except Exception as e:
+                    logger.error(f"Error processing challenge {challenge['challenge_id']} (iteration {iteration}): {str(e)}")
+                    logger.error("Stack trace:", exc_info=True)
+                    # Continue to next iteration even if this challenge failed
+                
+                logger.info(f"Completed evaluation iteration {iteration}, preparing to sleep for {sleep_interval} seconds...")
+                sleep_start = time.time()
                 await asyncio.sleep(sleep_interval)
-                continue
+                sleep_duration = time.time() - sleep_start
+                logger.info(f"Waking up after sleeping for {sleep_duration:.1f} seconds (iteration {iteration})")
                 
-            logger.info(f"Processing challenge {challenge['challenge_id']} with {challenge['pending_count']} responses (iteration {iteration})")
-            
-            try:
-                # Process the challenge
-                await evaluate_pending_responses(
-                    validator=validator,
-                    db_manager=db_manager,
-                    challenge=dict(challenge)
-                )
-                logger.info(f"Successfully completed challenge processing (iteration {iteration})")
             except Exception as e:
-                logger.error(f"Error processing challenge {challenge['challenge_id']} (iteration {iteration}): {str(e)}")
-                # Continue to next iteration even if this challenge failed
-            
-            logger.info(f"Completed evaluation iteration {iteration}, sleeping for {sleep_interval} seconds...")
-            await asyncio.sleep(sleep_interval)
-            logger.info(f"Waking up from sleep (iteration {iteration})")
-            
-        except Exception as e:
-            logger.error(f"Error in evaluation loop iteration {iteration}: {str(e)}")
-            logger.info(f"Sleeping for {sleep_interval} seconds before retry...")
-            await asyncio.sleep(sleep_interval)
-            logger.info("Waking up to retry after error")
-            continue  # Ensure we continue the loop after any error
+                logger.error(f"Error in evaluation loop iteration {iteration}: {str(e)}")
+                logger.error("Stack trace:", exc_info=True)
+                logger.info(f"Preparing to sleep for {sleep_interval} seconds before retry...")
+                sleep_start = time.time()
+                await asyncio.sleep(sleep_interval)
+                sleep_duration = time.time() - sleep_start
+                logger.info(f"Waking up after sleeping for {sleep_duration:.1f} seconds to retry after error")
+                continue  # Ensure we continue the loop after any error
+                
+    except Exception as e:
+        logger.error(f"Fatal error in run_evaluation_loop: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
+        raise  # Re-raise the exception to trigger the task's error callback
