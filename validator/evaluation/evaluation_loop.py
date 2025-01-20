@@ -26,7 +26,7 @@ RESPONSES_TO_CHECK = 10
 
 # Constants for batching and workers
 BATCH_SIZE = 5  # Number of frames to process in one batch
-MAX_WORKERS = 3  # Number of concurrent worker tasks
+MAX_WORKERS = 5  # Number of concurrent worker tasks
 MAX_RETRIES = 3  # Maximum retry attempts for failed batches
 WORKER_TIMEOUT = 300  # 5 minutes timeout for worker tasks
 
@@ -491,7 +491,7 @@ async def evaluate_pending_responses(
                     total_score=score_data['final_score'],
                     processing_time=score_data['processing_time'],
                     started_at=(score_data['started_at']),
-                    completed_at=(score_data['completed_at'])
+                    completed_at=datetime.now(timezone.utc).isoformat()
                 )
                 
                 if update_success:
