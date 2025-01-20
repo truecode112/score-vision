@@ -94,7 +94,7 @@ class VLMProcessor:
     ) -> Optional[str]:
         """Process a single VLM request with retries."""
         try:
-            logger.debug(f"Processing request {request.task_id} with {request.attempts_left} attempts left")
+            #logger.debug(f"Processing request {request.task_id} with {request.attempts_left} attempts left")
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     self.client.chat.completions.create,
@@ -106,7 +106,7 @@ class VLMProcessor:
                 timeout=API_TIMEOUT
             )
             content = response.choices[0].message.content
-            logger.debug(f"Request {request.task_id} succeeded with content: {content}")
+            #logger.debug(f"Request {request.task_id} succeeded with content: {content}")
             self.status.num_tasks_succeeded += 1
             return content
             
