@@ -985,3 +985,60 @@ class DatabaseManager:
         finally:
             cursor.close()
             conn.close()
+
+    async def get_pending_responses(self, challenge_id: str) -> List[GSRResponse]:
+        """
+        Get all unevaluated responses for a challenge.
+        
+        Args:
+            challenge_id: The challenge ID to get responses for
+            
+        Returns:
+            List of GSRResponse objects
+        """
+        conn = self.get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT 
+                    response_id,
+                    challenge_id,
+                    miner_hotkey,
+                    node_id,
+                    response_data,
+                    processing_time,
+                    received_at,
+                    completed_at
+                FROM responses
+                WHERE challenge_id = ?
+                  AND evaluated = FALSE
+                  AND response_data IS NOT NULL
+            """, (challenge_id,))
+            
+            rows = cursor.fetchall()
+            responses = []
+            
+            for row in rows:
+                try:
+                    response_data = json.loads(row["response_data"]) if row["response_data"] else {}
+                    response = GSRResponse(
+                        challenge_id=row["challenge_id"],
+                        miner_hotkey=row["miner_hotkey"],
+                        frames=response_data.get("frames", {}),
+                        processing_time=row["processing_time"],
+                        response_id=row["response_id"],
+                        node_id=row["node_id"]
+                    )
+                    responses.append(response)
+                except Exception as e:
+                    logger.error(f"Error processing response {row['response_id']}: {str(e)}")
+                    continue
+                    
+            logger.info(f"Found {len(responses)} pending responses for challenge {challenge_id}")
+            return responses
+            
+        finally:
+            cursor.close()
+            conn.close()

@@ -11,13 +11,13 @@ from fiber.logging_utils import get_logger
 logger = get_logger(__name__)
 
 # Constants for rate limiting
-MAX_REQUESTS_PER_MINUTE = 10000  # OpenAI limit
-MAX_TOKENS_PER_MINUTE = 2000000  # OpenAI limit
-BATCH_SIZE = 10  # Number of requests to batch together
+MAX_REQUESTS_PER_MINUTE = 10000  # Reduced from 10000
+MAX_TOKENS_PER_MINUTE = 1000000  # Reduced from 2000000
+BATCH_SIZE = 30  # Increased from 10
 RETRY_ATTEMPTS = 3
 COOLDOWN_AFTER_RATE_LIMIT = 15  # seconds
 SLEEP_ON_BATCH_FAILURE = 1  # seconds
-API_TIMEOUT = 60  # seconds - increased from 30s for keypoint validation
+API_TIMEOUT = 45  # seconds - increased from 30s for keypoint validation
 
 @dataclass
 class StatusTracker:
@@ -52,64 +52,75 @@ class VLMRequest:
     result: Optional[str] = None
 
 class VLMProcessor:
-    """Handles batched VLM API requests with rate limiting."""
+    """Manages batched VLM API requests with rate limiting and retries."""
     
     def __init__(self, api_key: str):
-        self.api_key = api_key
         self.client = OpenAI(api_key=api_key)
         self.status = StatusTracker()
+        self.retry_queue = asyncio.Queue()
+        self.request_semaphore = asyncio.Semaphore(10)  # Limit concurrent requests
+        self.last_request_time = 0
         self.available_request_capacity = MAX_REQUESTS_PER_MINUTE
         self.available_token_capacity = MAX_TOKENS_PER_MINUTE
-        self.last_update_time = time.time()
-        self.request_header = {"Authorization": f"Bearer {api_key}"}
-        self.retry_queue = asyncio.Queue()
-        self._task_id = 0
-
-    def _get_next_task_id(self) -> int:
-        """Generate sequential task IDs."""
-        self._task_id += 1
-        return self._task_id
-
+        self._task_id_counter = 0
+        self._task_id_lock = asyncio.Lock()
+        
+    async def _get_next_task_id(self) -> int:
+        """Get next unique task ID."""
+        async with self._task_id_lock:
+            self._task_id_counter += 1
+            return self._task_id_counter
+            
     async def _update_capacity(self):
-        """Update available API capacity based on time passed."""
-        current_time = time.time()
-        seconds_since_update = current_time - self.last_update_time
-        
-        self.available_request_capacity = min(
-            self.available_request_capacity + MAX_REQUESTS_PER_MINUTE * seconds_since_update / 60.0,
-            MAX_REQUESTS_PER_MINUTE
-        )
-        
-        self.available_token_capacity = min(
-            self.available_token_capacity + MAX_TOKENS_PER_MINUTE * seconds_since_update / 60.0,
-            MAX_TOKENS_PER_MINUTE
-        )
-        
-        self.last_update_time = current_time
+        """Update available capacity based on time elapsed."""
+        now = time.time()
+        time_passed = now - self.last_request_time
+        if time_passed >= 60:  # Reset after a minute
+            self.available_request_capacity = MAX_REQUESTS_PER_MINUTE
+            self.available_token_capacity = MAX_TOKENS_PER_MINUTE
+            self.last_request_time = now
+        elif time_passed > 0:  # Partial replenishment
+            request_replenishment = (MAX_REQUESTS_PER_MINUTE * time_passed / 60)
+            token_replenishment = (MAX_TOKENS_PER_MINUTE * time_passed / 60)
+            self.available_request_capacity = min(
+                MAX_REQUESTS_PER_MINUTE,
+                self.available_request_capacity + request_replenishment
+            )
+            self.available_token_capacity = min(
+                MAX_TOKENS_PER_MINUTE,
+                self.available_token_capacity + token_replenishment
+            )
+            self.last_request_time = now
 
     async def _process_request(
         self,
         session: aiohttp.ClientSession,
         request: VLMRequest
     ) -> Optional[str]:
-        """Process a single VLM request with retries."""
+        """Process a single VLM request with retries and rate limiting."""
         try:
-            #logger.debug(f"Processing request {request.task_id} with {request.attempts_left} attempts left")
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.client.chat.completions.create,
-                    model=request.model,
-                    messages=request.messages,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature
-                ),
-                timeout=API_TIMEOUT
-            )
-            content = response.choices[0].message.content
-            #logger.debug(f"Request {request.task_id} succeeded with content: {content}")
-            self.status.num_tasks_succeeded += 1
-            return content
-            
+            async with self.request_semaphore:  # Limit concurrent requests
+                await self._update_capacity()
+                
+                # Check if we need to cool down after rate limit
+                seconds_since_rate_limit = time.time() - self.status.time_of_last_rate_limit_error
+                if seconds_since_rate_limit < COOLDOWN_AFTER_RATE_LIMIT:
+                    await asyncio.sleep(COOLDOWN_AFTER_RATE_LIMIT - seconds_since_rate_limit)
+                
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.client.chat.completions.create,
+                        model=request.model,
+                        messages=request.messages,
+                        max_tokens=request.max_tokens,
+                        temperature=request.temperature
+                    ),
+                    timeout=API_TIMEOUT
+                )
+                content = response.choices[0].message.content
+                self.status.num_tasks_succeeded += 1
+                return content
+                
         except asyncio.TimeoutError as e:
             logger.error(f"Request {request.task_id} timed out after {API_TIMEOUT}s: {str(e)}")
             self.status.num_tasks_failed += 1
@@ -141,50 +152,55 @@ class VLMProcessor:
                 request.attempts_left -= 1
                 await self.retry_queue.put(request)
                 
-            self.status.log_status()
             return None
 
     async def process_batch(
         self,
         requests: List[VLMRequest]
     ) -> List[Optional[str]]:
-        """Process a batch of VLM requests in parallel."""
+        """Process a batch of VLM requests with improved concurrency control."""
         if not requests:
             return []
 
         async with aiohttp.ClientSession() as session:
+            # Process initial requests
             tasks = []
             for request in requests:
-                # Update capacity
                 await self._update_capacity()
-                
-                # Check if we need to cool down after rate limit
-                seconds_since_rate_limit = time.time() - self.status.time_of_last_rate_limit_error
-                if seconds_since_rate_limit < COOLDOWN_AFTER_RATE_LIMIT:
-                    await asyncio.sleep(COOLDOWN_AFTER_RATE_LIMIT - seconds_since_rate_limit)
-                
-                # Check capacity
                 if self.available_request_capacity >= 1:
                     self.available_request_capacity -= 1
                     request.attempts_left -= 1
                     self.status.num_tasks_started += 1
                     self.status.num_tasks_in_progress += 1
-                    
                     tasks.append(asyncio.create_task(self._process_request(session, request)))
                 else:
-                    await asyncio.sleep(0.1)  # Brief pause if at capacity
+                    await asyncio.sleep(0.1)
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Process retry queue
+            retry_tasks = []
+            while not self.retry_queue.empty():
+                request = await self.retry_queue.get()
+                await self._update_capacity()
+                if self.available_request_capacity >= 1:
+                    self.available_request_capacity -= 1
+                    self.status.num_tasks_started += 1
+                    self.status.num_tasks_in_progress += 1
+                    retry_tasks.append(asyncio.create_task(self._process_request(session, request)))
+                else:
+                    await self.retry_queue.put(request)
+                    break
+
+            # Wait for all tasks
+            all_results = await asyncio.gather(*tasks, *retry_tasks, return_exceptions=True)
             
             # Process results
             processed_results = []
-            for i, result in enumerate(results):
+            for i, result in enumerate(all_results[:len(requests)]):  # Only take initial request results
                 if isinstance(result, Exception):
                     logger.error(f"Batch request failed: {str(result)}")
                     self.status.num_tasks_failed += 1
                     processed_results.append(None)
                 else:
-                    self.status.num_tasks_succeeded += 1
                     processed_results.append(result)
                 self.status.num_tasks_in_progress -= 1
             
@@ -216,7 +232,7 @@ class VLMProcessor:
             ]
             
             request = VLMRequest(
-                task_id=self._get_next_task_id(),
+                task_id=await self._get_next_task_id(),
                 messages=messages,
                 metadata={"frame_id": frame_data.get("frame_id")}
             )
@@ -261,7 +277,7 @@ class VLMProcessor:
             ]
             
             request = VLMRequest(
-                task_id=self._get_next_task_id(),
+                task_id=await self._get_next_task_id(),
                 messages=messages,
                 max_tokens=10,
                 metadata={"bbox_id": img_data.get("bbox_id")}
@@ -339,7 +355,7 @@ class VLMProcessor:
             ]
             
             request = VLMRequest(
-                task_id=self._get_next_task_id(),
+                task_id=await self._get_next_task_id(),
                 messages=messages,
                 max_tokens=10,
                 metadata={"frame_id": frame_data.get("frame_id")}
@@ -377,4 +393,5 @@ class VLMProcessor:
             
             all_results.extend(processed_results)
 
+        return all_results 
         return all_results 

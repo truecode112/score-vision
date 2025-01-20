@@ -21,13 +21,7 @@ from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
 
-# Add timeout constants
-OPENAI_TIMEOUT = 30.0  # seconds
-BATCH_TIMEOUT = 60.0   # seconds
 FRAME_TIMEOUT = 180.0  # seconds
-MAX_CONCURRENT_CALLS = 1
-VLM_RATE_LIMIT = 1  # requests per second
-VLM_BATCH_SIZE = 5   # number of images per batch
 
 logger = get_logger(__name__)
 
@@ -244,31 +238,43 @@ class GSRValidator:
     async def validate_frame_detections(
         self,
         frame: np.ndarray,
-        detections: dict,
+        detections: Dict,
         frame_idx: int,
         challenge_id: str,
-        node_id: int,
-        reference_counts: Dict = None,
-        response_id: str = None
-    ) -> dict:
-        """
-        Validate detections in a single frame with timeout protection.
-        """
-        # Initialize results with default values
-        results = {
-            "objects": [],
-            "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
-            "scores": {
-                "keypoint_score": 0.0,
-                "bbox_score": 0.0,
-                "count_match_score": 0.0,
-                "final_score": 0.0
-            },
-            "debug_frame_path": "",
-            "timing": {}
-        }
-
+        node_id: str,
+        reference_counts: Optional[Dict] = None,
+        response_id: Optional[str] = None
+    ) -> Dict:
+        """Validate frame detections including bounding boxes and keypoints."""
         try:
+            # Log the actual detections being processed
+            logger.info(f"\nProcessing detections for response {response_id} (node {node_id}):")
+            logger.info(f"  - Frame index: {frame_idx}, - Objects detected: {len(detections.get('objects', []))}, - Keypoints detected: {len(detections.get('keypoints', []))}")
+            
+            # Log sample of objects for verification
+            # if detections.get('objects'):
+            #     sample_objects = detections['objects'][:2]  # Show first 2 objects
+            #     logger.info(f"  - Sample objects: {sample_objects}")
+            
+            # # Log sample of keypoints for verification    
+            # if detections.get('keypoints'):
+            #     sample_keypoints = detections['keypoints'][:2]  # Show first 2 keypoints
+            #     logger.info(f"  - Sample keypoints: {sample_keypoints}")
+
+            # Initialize results with default values
+            results = {
+                "objects": [],
+                "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
+                "scores": {
+                    "keypoint_score": 0.0,
+                    "bbox_score": 0.0,
+                    "count_match_score": 0.0,
+                    "final_score": 0.0
+                },
+                "debug_frame_path": "",
+                "timing": {}
+            }
+
             async def _process_frame():
                 start = datetime.now()
                 logger.info(f"Validating frame {frame_idx} (challenge {challenge_id}, node {node_id})")
