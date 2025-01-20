@@ -523,10 +523,12 @@ async def run_evaluation_loop(
     db_manager = DatabaseManager(db_path)
     validator = GSRValidator(openai_api_key=openai_api_key, validator_hotkey=validator_hotkey)
     validator.db_manager = db_manager  # Let the validator store frame-level evaluations
+    iteration = 0
     
     while True:
         try:
-            logger.info("Starting new evaluation loop iteration")
+            iteration += 1
+            logger.info(f"Starting evaluation loop iteration {iteration}")
             
             # Get pending challenges
             conn = db_manager.get_connection()
@@ -534,6 +536,7 @@ async def run_evaluation_loop(
             cursor = conn.cursor()
             
             try:
+                logger.info("Checking for challenges ready for evaluation...")
                 # Get challenges ready for evaluation
                 cursor.execute("""
                     SELECT DISTINCT c.challenge_id, c.video_url, c.type AS challenge_type, 
@@ -554,11 +557,12 @@ async def run_evaluation_loop(
                 conn.close()
             
             if not challenge:
-                logger.info("No challenges ready for evaluation")
+                logger.info(f"No challenges ready for evaluation (iteration {iteration})")
+                logger.info(f"Sleeping for {sleep_interval} seconds before next check...")
                 await asyncio.sleep(sleep_interval)
                 continue
                 
-            logger.info(f"Processing challenge {challenge['challenge_id']} with {challenge['pending_count']} responses")
+            logger.info(f"Processing challenge {challenge['challenge_id']} with {challenge['pending_count']} responses (iteration {iteration})")
             
             try:
                 # Process the challenge
@@ -567,14 +571,18 @@ async def run_evaluation_loop(
                     db_manager=db_manager,
                     challenge=dict(challenge)
                 )
+                logger.info(f"Successfully completed challenge processing (iteration {iteration})")
             except Exception as e:
-                logger.error(f"Error processing challenge {challenge['challenge_id']}: {str(e)}")
+                logger.error(f"Error processing challenge {challenge['challenge_id']} (iteration {iteration}): {str(e)}")
                 # Continue to next iteration even if this challenge failed
             
-            logger.info("Completed evaluation iteration, sleeping before next check")
+            logger.info(f"Completed evaluation iteration {iteration}, sleeping for {sleep_interval} seconds...")
             await asyncio.sleep(sleep_interval)
+            logger.info(f"Waking up from sleep (iteration {iteration})")
             
         except Exception as e:
-            logger.error(f"Error in evaluation loop: {str(e)}")
+            logger.error(f"Error in evaluation loop iteration {iteration}: {str(e)}")
+            logger.info(f"Sleeping for {sleep_interval} seconds before retry...")
             await asyncio.sleep(sleep_interval)
+            logger.info("Waking up to retry after error")
             continue  # Ensure we continue the loop after any error
