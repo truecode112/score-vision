@@ -12,7 +12,8 @@ from loguru import logger
 
 from fiber.logging_utils import get_logger
 from miner.core.models.config import Config
-from miner.dependencies import get_config
+from miner.core.configuration import factory_config
+from miner.dependencies import get_config, verify_request, blacklist_low_stake
 from sports.configs.soccer import SoccerPitchConfiguration
 from miner.utils.device import get_optimal_device
 from miner.utils.model_manager import ModelManager
@@ -109,13 +110,10 @@ async def process_soccer_video(
         logger.error(f"Error processing video: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Video processing error: {str(e)}")
 
-router = APIRouter()
-
-@router.post("/challenge")
 async def process_challenge(
     request: Request,
     config: Config = Depends(get_config),
-    model_manager: ModelManager = Depends(get_model_manager)
+    model_manager: ModelManager = Depends(get_model_manager),
 ):
     logger.info("Attempting to acquire miner lock...")
     async with miner_lock:
@@ -163,3 +161,13 @@ async def process_challenge(
             raise HTTPException(status_code=500, detail=f"Challenge processing error: {str(e)}")
         finally:
             logger.info("Releasing miner lock...")
+
+# Create router with dependencies
+router = APIRouter()
+router.add_api_route(
+    "/challenge",
+    process_challenge,
+    tags=["soccer"],
+    dependencies=[Depends(blacklist_low_stake), Depends(verify_request)],
+    methods=["POST"],
+)

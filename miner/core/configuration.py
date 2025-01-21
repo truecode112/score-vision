@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from fiber.chain import chain_utils, interface
 from fiber.chain.metagraph import Metagraph
-from fiber.miner.security import nonce_management
+from fiber.miner.security.nonce_management import NonceManager
 from miner.core.models.config import Config
 
 T = TypeVar("T", bound=BaseModel)
@@ -17,7 +17,8 @@ load_dotenv()
 
 @lru_cache
 def factory_config() -> Config:
-    nonce_manager = nonce_management.NonceManager()
+    # Initialize security components
+    nonce_manager = NonceManager()
 
     # Load fiber network configuration
     wallet_name = os.getenv("WALLET_NAME", "default")
@@ -26,10 +27,8 @@ def factory_config() -> Config:
     subtensor_network = os.getenv("SUBTENSOR_NETWORK")
     subtensor_address = os.getenv("SUBTENSOR_ADDRESS")
     load_old_nodes = bool(os.getenv("LOAD_OLD_NODES", True))
-    min_stake_threshold = int(os.getenv("MIN_STAKE_THRESHOLD", 1_000))
+    min_stake_threshold = float(os.getenv("MIN_STAKE_THRESHOLD", 1000))
     refresh_nodes = os.getenv("REFRESH_NODES", "true").lower() == "true"
-
-    # Load soccer miner configuration
     device = os.getenv("DEVICE", "cpu")
 
     assert netuid is not None, "Must set NETUID env var please!"
@@ -47,10 +46,13 @@ def factory_config() -> Config:
     keypair = chain_utils.load_hotkey_keypair(wallet_name, hotkey_name)
 
     return Config(
+        # Device config
+        device=device,
+        
+        # Network and security config
         nonce_manager=nonce_manager,
         keypair=keypair,
         metagraph=metagraph,
         min_stake_threshold=min_stake_threshold,
-        httpx_client=httpx.AsyncClient(),
-        device=device
+        httpx_client=httpx.AsyncClient()
     ) 

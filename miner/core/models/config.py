@@ -1,5 +1,12 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
+from dataclasses import dataclass
+
+import httpx
+from substrateinterface import Keypair
+
+from fiber.chain.metagraph import Metagraph
+from fiber.miner.security.nonce_management import NonceManager
 
 class Config(BaseModel):
     """Configuration for the miner service."""
@@ -38,5 +45,13 @@ class Config(BaseModel):
         description="Path to ball detection model"
     )
     
+    # Network and security configuration
+    keypair: Keypair
+    metagraph: Metagraph
+    min_stake_threshold: float = Field(default=1000.0)
+    httpx_client: httpx.AsyncClient
+    nonce_manager: Any  # Using Any to avoid Pydantic validation issues with NonceManager
+
     class Config:
-        env_prefix = "MINER_"
+        arbitrary_types_allowed = True
+        
