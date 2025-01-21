@@ -47,7 +47,7 @@ async def blacklist_low_stake(
     validator_hotkey: str = Header(..., alias=cst.VALIDATOR_HOTKEY), config: Config = Depends(get_config)
 ):
     metagraph = config.metagraph
-
+    metagraph.sync_nodes()
     node = metagraph.nodes.get(validator_hotkey)
     if not node:
         raise HTTPException(status_code=403, detail="Hotkey not found in metagraph")
