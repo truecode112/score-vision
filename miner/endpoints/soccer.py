@@ -71,14 +71,15 @@ async def process_soccer_video(
             detections = sv.Detections.from_ultralytics(player_result)
             detections = tracker.update_with_detections(detections)
             
+            # Convert numpy arrays to Python native types
             frame_data = {
-                "frame_number": frame_number,
+                "frame_number": int(frame_number),  # Convert to native int
                 "keypoints": keypoints.xy[0].tolist() if keypoints and keypoints.xy is not None else [],
                 "objects": [
                     {
-                        "id": int(tracker_id),
-                        "bbox": bbox.tolist(),
-                        "class_id": int(class_id)
+                        "id": int(tracker_id),  # Convert numpy.int64 to native int
+                        "bbox": [float(x) for x in bbox],  # Convert numpy.float32/64 to native float
+                        "class_id": int(class_id)  # Convert numpy.int64 to native int
                     }
                     for tracker_id, bbox, class_id in zip(
                         detections.tracker_id,
