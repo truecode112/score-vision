@@ -156,6 +156,9 @@ async def get_next_challenge(validator_hotkey: str) -> dict:
             challenge_data = response.json()
             
             if challenge_data:
+                # Rename 'id' to 'task_id' in the response
+                if 'id' in challenge_data:
+                    challenge_data['task_id'] = challenge_data.pop('id')
                 logger.info(f"Fetched challenge: {challenge_data}")
                 return challenge_data
             else:
