@@ -5,8 +5,16 @@ import json
 from fiber.logging_utils import get_logger
 from validator.config import SCORE_VISION_API
 import asyncio
+import os
+import time
+from fiber.chain.signatures import sign_message
+from fiber.chain.chain_utils import load_hotkey_keypair
 
 logger = get_logger(__name__)
+
+NETUID = os.getenv("NETUID", "44")
+WALLET_NAME = os.getenv("WALLET_NAME", "default")
+HOTKEY_NAME = os.getenv("HOTKEY_NAME", "default")
 
 def optimize_bbox_coordinates(bbox):
     """Round bbox coordinates to 2 decimal places to reduce payload size."""
@@ -106,35 +114,59 @@ def log_data_size(data: Dict, prefix: str = "") -> None:
     except Exception as e:
         logger.error(f"Error logging data size: {str(e)}")
 
-async def get_next_challenge(validator_address: str) -> Optional[Dict[str, Any]]:
+async def get_next_challenge(validator_hotkey: str) -> dict:
     """
     Fetch the next challenge from the API.
     
     Args:
-        validator_address: The validator's ss58 address
+        validator_hotkey (str): The validator's hotkey.
     
     Returns:
-        Dict with video_url and task_id, or None if no challenge available
+        dict: Challenge data if successful, None otherwise.
     """
     try:
+        # Load the hotkey
+        keypair = load_hotkey_keypair(WALLET_NAME, HOTKEY_NAME)
+        
+        # Generate nonce (current time in nanoseconds)
+        nonce = str(int(time.time() * 1e9))
+        
+        # Sign the nonce
+        signature = sign_message(keypair, nonce)
+        
+        # Prepare query parameters
+        params = {
+            "validator_hotkey": validator_hotkey,
+            "signature": signature,
+            "nonce": nonce,
+            "netuid": NETUID
+        }
+        
+        # Use the API URL from config
+        url = f"{SCORE_VISION_API}/api/tasks/next/v2"
+        
+        # Log the full URL that will be constructed
+        from urllib.parse import urlencode
+        full_url = f"{url}?{urlencode(params)}"
+        logger.debug(f"Making request to: {full_url}")
+        
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{SCORE_VISION_API}/api/tasks/next?validator_hotkey={validator_address}")
+            response = await client.get(url, params=params)
             response.raise_for_status()
+            challenge_data = response.json()
             
-            data = response.json()
-            logger.debug(f"Got challenge from API: {data}")
-            
-            # Only return the fields we need
-            return {
-                'video_url': data['video_url'],
-                'task_id': data['id'],
-                'type': 'gsr'  # Hardcode the type since we only support GSR for now
-            }
-            
+            if challenge_data:
+                logger.info(f"Fetched challenge: {challenge_data}")
+                return challenge_data
+            else:
+                logger.warning("No challenge available from API")
+                return None
+    
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error occurred: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Error fetching challenge: {str(e)}")
-        if isinstance(e, httpx.HTTPError):
-            logger.error(f"HTTP Error response: {e.response.text if hasattr(e, 'response') else 'No response'}")
+        logger.error(f"An error occurred while fetching the challenge: {str(e)}")
         return None
 
 async def update_task_scores(
