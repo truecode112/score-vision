@@ -55,8 +55,8 @@ async def calculate_score(
             # Calculate final score
             final_score = (
                 quality_score * 0.6 +
-                speed_score * 0.2 +
-                availability_score * 0.2
+                speed_score * 0.3 +
+                availability_score * 0.1
             )
             final_score = final_score**(3*ALPHA_SCORING_MULTIPLICATOR)
             
