@@ -26,6 +26,7 @@ MIN_MINERS = 1
 MAX_MINERS = 30
 SCORE_THRESHOLD = 0.7
 FRAMES_TO_VALIDATE = 2
+ALPHA_SCORING_MULTIPLICATOR = 4
 SCORE_VISION_API = "https://api.scorevision.io"
 #SCORE_VISION_API = "http://localhost:8000"
 
@@ -64,3 +65,4 @@ logger.info(f"Weights interval: {WEIGHTS_INTERVAL}")
 logger.info(f"DB path: {DB_PATH}")
 logger.info(f"Log level: {LOG_LEVEL}")
 logger.info(f"Validation delay: {VALIDATION_DELAY}")
+logger.info(f"Alpha multiplicator for scoring function : {ALPHA_SCORING_MULTIPLICATOR}")
