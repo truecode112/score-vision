@@ -59,6 +59,7 @@ async def calculate_score(
                 availability_score * 0.1
             )
             final_score = final_score**(3*ALPHA_SCORING_MULTIPLICATOR)
+            logger.info(f"Final score for response {response_id}: {final_score}")
             
             # Parse response data
             try:
