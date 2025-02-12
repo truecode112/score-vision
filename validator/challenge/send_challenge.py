@@ -16,12 +16,12 @@ def optimize_coordinates(coords: List[float]) -> List[float]:
     """Round coordinates to 2 decimal places to reduce data size."""
     return [round(float(x), 2) for x in coords]
 
-def filter_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
-    """Filter out keypoints with zero coordinates and round remaining to 2 decimal places."""
-    return [optimize_coordinates(kp) for kp in keypoints if not (kp[0] == 0 and kp[1] == 0)]
+def optimize_keypoints(keypoints: List[List[float]]) -> List[List[float]]:
+    """Round keypoint coordinates to 2 decimal places."""
+    return [optimize_coordinates(kp) for kp in keypoints]
 
 def optimize_response_data(response_data: Dict) -> Dict:
-    """Optimize response data by filtering zero keypoints and rounding bbox coordinates."""
+    """Optimize response data by rounding coordinates while preserving all keypoints."""
     optimized_data = {}
     
     # Handle frames data
@@ -31,9 +31,9 @@ def optimize_response_data(response_data: Dict) -> Dict:
             frame_num = str(frame["frame_number"])
             frame_data = {}
             
-            # Optimize keypoints if present
+            # Optimize keypoints if present - preserve all keypoints including (0,0)
             if "keypoints" in frame and isinstance(frame["keypoints"], list):
-                frame_data["keypoints"] = filter_keypoints(frame["keypoints"])
+                frame_data["keypoints"] = optimize_keypoints(frame["keypoints"])
                 
             # Optimize bounding boxes if present
             if "objects" in frame and isinstance(frame["objects"], list):
