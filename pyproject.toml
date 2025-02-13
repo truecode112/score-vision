@@ -38,7 +38,7 @@ miner = [
     "httpx>=0.25.2",
     "pydantic>=2.5.2",
     "PyYAML>=6.0.1",
-    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.1.0"
+    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.2.0"
 ]
 validator = [
     "fastapi>=0.104.0",
@@ -58,7 +58,7 @@ validator = [
     "sqlalchemy>=2.0.23",
     "tenacity>=8.2.3",
     "pytz>=2023.3",
-    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.1.0"
+    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.2.0"
 ]
 dev = [
     "pytest>=7.0.0",
