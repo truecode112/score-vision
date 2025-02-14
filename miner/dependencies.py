@@ -49,9 +49,28 @@ async def blacklist_low_stake(
     metagraph = config.metagraph
     metagraph.sync_nodes()
     node = metagraph.nodes.get(validator_hotkey)
+    logger.info(f"Node {validator_hotkey} has stake {node.stake}")
+    logger.info(f"Node full object: {node}")
     if not node:
         raise HTTPException(status_code=403, detail="Hotkey not found in metagraph")
 
     if node.stake < config.min_stake_threshold:
         logger.debug(f"Node {validator_hotkey} has insufficient stake of {node.stake} - minimum is {config.min_stake_threshold}")
         raise HTTPException(status_code=403, detail=f"Insufficient stake of {node.stake} ") 
+
+# async def blacklist_low_stake(
+#     validator_hotkey: str = Header(..., alias=cst.VALIDATOR_HOTKEY), 
+#     config: Config = Depends(get_config)
+# ):
+#     metagraph = config.metagraph
+#     metagraph.sync_nodes()
+#     node = metagraph.nodes.get(validator_hotkey)
+#     logger.info(f"Node {validator_hotkey} has vtrust {node.vtrust}")
+#     logger.info(f"Validator object: {node}")
+    
+#     if not node:
+#         raise HTTPException(status_code=403, detail="Hotkey not found in metagraph")
+
+#     if node.vtrust < 0.5:  # Changed from stake to vtrust check
+#         logger.debug(f"Node {validator_hotkey} has insufficient vtrust of {node.vtrust}")
+#         raise HTTPException(status_code=403, detail=f"Insufficient validator trust score of {node.vtrust}")         
