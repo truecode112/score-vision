@@ -39,7 +39,7 @@ miner = [
     "PyYAML>=6.0.1",
     "bt-decode==0.5.0a2",
     "async-substrate-interface==1.0.0",
-    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.2.2#egg=fiber"
+    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.3.0#egg=fiber"
 ]
 validator = [
     "fastapi>=0.104.0",
@@ -61,7 +61,7 @@ validator = [
     "pytz>=2023.3",
     "bt-decode==0.5.0a2",
     "async-substrate-interface==1.0.0",
-    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.2.2#egg=fiber"
+    "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.3.0#egg=fiber"
 ]
 dev = [
     "pytest>=7.0.0",

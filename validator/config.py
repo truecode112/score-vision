@@ -23,7 +23,7 @@ VALIDATOR_HOST = os.getenv("VALIDATOR_HOST", "0.0.0.0")
 
 # Default configuration values
 MIN_MINERS = 1
-MAX_MINERS = 30
+MAX_MINERS = 60
 SCORE_THRESHOLD = 0.7
 FRAMES_TO_VALIDATE = 2
 ALPHA_SCORING_MULTIPLICATOR = 4
@@ -39,7 +39,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
-CHALLENGE_INTERVAL = timedelta(minutes=30)
+CHALLENGE_INTERVAL = timedelta(minutes=60)
 CHALLENGE_TIMEOUT = timedelta(minutes=100)
 
 WEIGHTS_INTERVAL = timedelta(minutes=30)
