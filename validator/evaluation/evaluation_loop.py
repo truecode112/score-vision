@@ -348,7 +348,27 @@ async def evaluate_pending_responses(
         if not responses:
             logger.info(f"No pending responses for challenge {challenge['challenge_id']}")
             return
-
+        sorted_responses = sorted(responses,key=lambda r: r.processing_time if r.processing_time is not None else float('999'))
+        top_responses = sorted_responses[:60]
+        evaluation_results = []
+        for resp in responses:
+            if resp not in top_responses:
+                started_at = db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], resp.miner_hotkey)
+                evaluation_results.append({
+                    "challenge_id": challenge['challenge_id'],
+                    "miner_hotkey": resp.miner_hotkey,
+                    "node_id": resp.node_id,
+                    "response_id": resp.response_id,
+                    "score": 0.4,
+                    "processing_time": resp.processing_time,
+                    "validation_result": None,
+                    "task_returned_data": None,
+                    "started_at": started_at,
+                    "completed_at": None,  # Will be set by calculate_score
+                    "received_at": None  # Will be set by calculate_score
+                })
+                
+        responses=top_responses        
         # Select frames for this challenge
         frames = await select_frames_with_players(
             validator,
@@ -385,7 +405,6 @@ async def evaluate_pending_responses(
         await eval_queue.queue.join()
         
         # Process results
-        evaluation_results = []
         for response in responses:
             results = eval_queue.results.get(response.response_id, [])
             logger.info(f"Processing results for response {response.response_id}")
