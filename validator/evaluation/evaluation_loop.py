@@ -359,9 +359,13 @@ async def evaluate_pending_responses(
                     "miner_hotkey": resp.miner_hotkey,
                     "node_id": resp.node_id,
                     "response_id": resp.response_id,
-                    "score": 0.4,
+                    "score": 0.4,  #check data type
                     "processing_time": resp.processing_time,
-                    "validation_result": None,
+                    "validation_result": ValidationResult(
+                        score=0.4,
+                        frame_scores=None,
+                        feedback=None
+                    ),
                     "task_returned_data": None,
                     "started_at": started_at,
                     "completed_at": None,  # Will be set by calculate_score
