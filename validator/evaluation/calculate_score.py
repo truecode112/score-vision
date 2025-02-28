@@ -5,7 +5,6 @@ import json
 from fiber.logging_utils import get_logger
 from validator.challenge.challenge_types import GSRResponse, ValidationResult
 from validator.db.operations import DatabaseManager
-from validator.config import ALPHA_SCORING_MULTIPLICATOR
 import httpx
 import math
 
@@ -58,7 +57,6 @@ async def calculate_score(
                 speed_score * 0.3 +
                 availability_score * 0.1
             )
-            final_score = final_score**(3*ALPHA_SCORING_MULTIPLICATOR)
             logger.info(f"Final score for response {response_id}: {final_score}")
             
             # Parse response data
