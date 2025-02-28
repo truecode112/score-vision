@@ -12,7 +12,8 @@ from validator.config import (
     SUBTENSOR_ADDRESS,
     WALLET_NAME,
     HOTKEY_NAME,
-    VERSION_KEY
+    VERSION_KEY,
+    ALPHA_SCORING_MULTIPLICATOR
 )
 
 logger = get_logger(__name__)
@@ -88,9 +89,11 @@ async def set_weights(
                 'availability_score': 0.0,
                 'avg_processing_time': 0.0
             })
+            final_score=score_data['final_score']
+            adjusted_score = final_score ** (3 * ALPHA_SCORING_MULTIPLICATOR)
             
             node_ids.append(node_id)
-            node_weights.append(score_data['final_score'])
+            node_weights.append(adjusted_score)
         
         # Ensure weights sum to 1.0
         total_weight = sum(node_weights)
