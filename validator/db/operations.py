@@ -338,13 +338,7 @@ class DatabaseManager:
             AVG(rs.availability_score) as availability_score,
             AVG(r.processing_time) as avg_processing_time,
             COUNT(*) as response_count,
-            AVG(
-                CASE
-                    WHEN rs.total_score != (rs.speed_score * 0.3 + rs.evaluation_score * 0.6 + rs.availability_score * 0.1)
-                    THEN rs.total_score ** (1.0 / (3 * 4))
-                    ELSE rs.total_score
-                END
-            ) as final_score
+            AVG(rs.speed_score * 0.3 + rs.evaluation_score * 0.6 + rs.availability_score * 0.1) as final_score
         FROM responses r
         JOIN response_scores rs ON r.response_id = rs.response_id
         WHERE r.received_at >= datetime('now', '-72 hours')
