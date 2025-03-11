@@ -12,6 +12,27 @@ import uuid
 
 logger = get_logger(__name__)
 
+class AsyncBarrier:
+    def __init__(self, parties: int):
+        self.parties = parties
+        self.count = 0
+        self.condition = asyncio.Condition()
+        self.generation = 0  # To allow reuse of the barrier
+
+    async def wait(self):
+        async with self.condition:
+            gen = self.generation
+            self.count += 1
+            if self.count == self.parties:
+                # All parties have reached the barrier.
+                self.generation += 1
+                self.count = 0
+                self.condition.notify_all()
+            else:
+                # Wait until the barrier is released.
+                while gen == self.generation:
+                    await self.condition.wait()
+                    
 def optimize_coordinates(coords: List[float]) -> List[float]:
     """Round coordinates to 2 decimal places to reduce data size."""
     return [round(float(x), 2) for x in coords]
@@ -57,6 +78,7 @@ async def send_challenge(
     hotkey: str,
     keypair: Keypair,
     node_id: int,
+    barrier: AsyncBarrier,
     db_manager=None,
     client: httpx.AsyncClient = None,
     timeout: float = CHALLENGE_TIMEOUT.total_seconds()  # Use config timeout in seconds
@@ -95,12 +117,14 @@ async def send_challenge(
             client = httpx.AsyncClient(timeout=timeout)
             should_close_client = True
 
+        if db_manager:
+            logger.debug("Marking challenge as sent in database")
+            db_manager.mark_challenge_sent(challenge.challenge_id, hotkey)
+
+        await barrier.wait()
+        
         try:
-            # Mark as sent BEFORE awaiting response
             sent_time = datetime.now(timezone.utc)
-            if db_manager:
-                logger.debug("Marking challenge as sent in database")
-                db_manager.mark_challenge_sent(challenge.challenge_id, hotkey)
 
             logger.debug("Sending challenge request...")
             
@@ -118,6 +142,7 @@ async def send_challenge(
             
             received_time = datetime.now(timezone.utc)
             processing_time = (received_time - sent_time).total_seconds()
+            await barrier.wait()
             
             logger.debug(f"Got response with status code: {response.status_code}")
             
@@ -167,12 +192,16 @@ async def send_challenge(
             logger.info(f"Challenge {challenge.challenge_id} sent successfully to {hotkey} (node {node_id})")
             return response
             
+        except Exception as e:
+            await barrier.wait()
+            
         finally:
             if should_close_client:
                 logger.debug("Closing HTTP client")
                 await client.aclose()
                 
     except Exception as e:
+        await barrier.wait()
         error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
         logger.error(error_msg)
         logger.error("Full error traceback:", exc_info=True)
