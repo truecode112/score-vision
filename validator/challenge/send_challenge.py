@@ -194,6 +194,10 @@ async def send_challenge(
             
         except Exception as e:
             await barrier.wait()
+            error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
+            logger.error(error_msg)
+            logger.error("Full error traceback:", exc_info=True)
+            raise ValueError(error_msg)
             
         finally:
             if should_close_client:
@@ -201,6 +205,7 @@ async def send_challenge(
                 await client.aclose()
                 
     except Exception as e:
+        await barrier.wait()
         await barrier.wait()
         error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
         logger.error(error_msg)
