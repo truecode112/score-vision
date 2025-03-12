@@ -40,6 +40,7 @@ from validator.evaluation.calculate_score import calculate_score
 from validator.db.schema import init_db
 from validator.evaluation.evaluation_loop import run_evaluation_loop
 from validator.utils.api import get_next_challenge
+from validator.utils.async_utils import AsyncBarrier
 
 # TODO check why stopped working, only doing availablity check, but not logging anything.
 # Load environment variables
@@ -47,26 +48,7 @@ validator_dir = Path(__file__).parent
 env_path = validator_dir / ".env"
 load_dotenv(env_path)
 
-class AsyncBarrier:
-    def __init__(self, parties: int):
-        self.parties = parties
-        self.count = 0
-        self.condition = asyncio.Condition()
-        self.generation = 0  # To allow reuse of the barrier
 
-    async def wait(self):
-        async with self.condition:
-            gen = self.generation
-            self.count += 1
-            if self.count == self.parties:
-                # All parties have reached the barrier.
-                self.generation += 1
-                self.count = 0
-                self.condition.notify_all()
-            else:
-                # Wait until the barrier is released.
-                while gen == self.generation:
-                    await self.condition.wait()
                     
 class ChallengeTask:
     def __init__(self, node_id: int, task: asyncio.Task, timestamp: datetime, challenge: GSRChallenge, miner_hotkey: str):
