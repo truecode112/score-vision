@@ -7,31 +7,35 @@ class AsyncBarrier:
     """
 
     def __init__(self, parties: int):
-        """
-        Initialize the barrier.
+        if parties <= 0:
+            raise ValueError("The number of parties must be greater than 0.")
         
-        Args:
-            parties (int): The number of tasks that must reach the barrier before proceeding.
-        """
         self.parties = parties
         self.count = 0
         self.condition = asyncio.Condition()
-        self.generation = 0  # To allow reuse of the barrier
+        self.generation = 0 
+        self.timeout_event = asyncio.Event() 
 
-    async def wait(self):
-        """
-        Wait until all parties have reached the barrier.
-        Once all parties reach the barrier, they are released simultaneously.
-        """
+    async def wait(self, timeout: float = 60.0):
         async with self.condition:
             gen = self.generation
             self.count += 1
+
             if self.count == self.parties:
-                # All parties have reached the barrier.
                 self.generation += 1
                 self.count = 0
                 self.condition.notify_all()
             else:
-                # Wait until the barrier is released.
-                while gen == self.generation:
-                    await self.condition.wait()
+                try:
+                    await asyncio.wait_for(self._wait_for_generation(gen), timeout=timeout)
+                except asyncio.TimeoutError:
+                    self.generation += 1
+                    self.count = 0
+                    self.condition.notify_all()
+
+    async def _wait_for_generation(self, gen: int):
+        """
+        Helper function to wait until the barrier generation changes.
+        """
+        while gen == self.generation:
+            await self.condition.wait()
