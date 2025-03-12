@@ -9,6 +9,7 @@ from validator.challenge.challenge_types import GSRChallenge, GSRResponse
 from validator.config import CHALLENGE_TIMEOUT
 from typing import List, Dict
 import uuid
+from validator.utils.async_utils import AsyncBarrier
 
 logger = get_logger(__name__)
 
