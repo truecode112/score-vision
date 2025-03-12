@@ -12,27 +12,6 @@ import uuid
 
 logger = get_logger(__name__)
 
-class AsyncBarrier:
-    def __init__(self, parties: int):
-        self.parties = parties
-        self.count = 0
-        self.condition = asyncio.Condition()
-        self.generation = 0  # To allow reuse of the barrier
-
-    async def wait(self):
-        async with self.condition:
-            gen = self.generation
-            self.count += 1
-            if self.count == self.parties:
-                # All parties have reached the barrier.
-                self.generation += 1
-                self.count = 0
-                self.condition.notify_all()
-            else:
-                # Wait until the barrier is released.
-                while gen == self.generation:
-                    await self.condition.wait()
-                    
 def optimize_coordinates(coords: List[float]) -> List[float]:
     """Round coordinates to 2 decimal places to reduce data size."""
     return [round(float(x), 2) for x in coords]
