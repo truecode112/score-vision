@@ -74,6 +74,9 @@ async def send_challenge(
     logger.info(f"  Challenge ID: {challenge.challenge_id}")
     logger.info(f"  Video URL: {challenge.video_url}")
 
+    remaining_barriers = 2
+    response = None
+    
     try:
         # First, store the challenge in the challenges table
         if db_manager:
@@ -101,7 +104,9 @@ async def send_challenge(
             logger.debug("Marking challenge as sent in database")
             db_manager.mark_challenge_sent(challenge.challenge_id, hotkey)
 
-        await barrier.wait()
+        if remaining_barriers: 
+            await barrier.wait()
+            remaining_barriers -= 1
         
         try:
             sent_time = datetime.now(timezone.utc)
@@ -122,12 +127,15 @@ async def send_challenge(
             
             received_time = datetime.now(timezone.utc)
             processing_time = (received_time - sent_time).total_seconds()
-            await barrier.wait()
+
+            response.raise_for_status()
+            if remaining_barriers: 
+                await barrier.wait()
+                remaining_barriers -= 1
             
             logger.debug(f"Got response with status code: {response.status_code}")
             
             try:
-                response.raise_for_status()
                 response_data = response.json()
                 
                 # Log essential information about the response
@@ -163,17 +171,24 @@ async def send_challenge(
                     
                     logger.info(f"Stored response {response_id} in database")
                 
+                logger.info(f"Challenge {challenge.challenge_id} sent successfully to {hotkey} (node {node_id})")
+
             except Exception as e:
-                logger.error(f"Response error: {str(e)}")
-                logger.error(f"Response status code: {response.status_code}")
-                logger.error(f"Response headers: {response.headers}")
+                logger.error("Failed to process response")
+                logger.error(e)
+                logger.error("Full error traceback:", exc_info=True)
                 raise
 
-            logger.info(f"Challenge {challenge.challenge_id} sent successfully to {hotkey} (node {node_id})")
-            return response
+            finally:
+                return response
             
         except Exception as e:
-            await barrier.wait()
+            if remaining_barriers: 
+                await barrier.wait()
+                remaining_barriers -= 1
+            logger.error(f"Response error: {str(e)}")
+            logger.error(f"Response status code: {response.status_code}")
+            logger.error(f"Response headers: {response.headers}")
             error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
             logger.error(error_msg)
             logger.error("Full error traceback:", exc_info=True)
@@ -185,9 +200,14 @@ async def send_challenge(
                 await client.aclose()
                 
     except Exception as e:
-        await barrier.wait()
-        await barrier.wait()
+        if remaining_barriers: 
+            await barrier.wait()
+            remaining_barriers -= 1
+        if remaining_barriers: 
+            await barrier.wait()
+            remaining_barriers -= 1
         error_msg = f"Failed to send challenge {challenge.challenge_id} to {hotkey} (node {node_id}): {str(e)}"
         logger.error(error_msg)
         logger.error("Full error traceback:", exc_info=True)
         raise ValueError(error_msg)
+        
