@@ -90,6 +90,9 @@ class GSRValidator:
             try:
                 async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                     resp = await client.get(video_url)
+                    if resp.status_code==404:
+                        logger.error(f"❌ Video not found (404): {video_url}. Skipping challenge.")
+                        return None
                     resp.raise_for_status()
                     temp_dir = Path(tempfile.gettempdir())
                     path = temp_dir / f"video_{datetime.now().timestamp()}.mp4"
