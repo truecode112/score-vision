@@ -1042,3 +1042,29 @@ class DatabaseManager:
         finally:
             cursor.close()
             conn.close()
+            
+    def mark_responses_failed(self, challenge_id):
+        """Mark all responses for a challenge as evaluated if the video is missing."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                UPDATE responses
+                SET evaluated = TRUE, evaluated_at = ?
+                WHERE challenge_id = ?
+            """, (datetime.utcnow(), challenge_id))
+    
+            conn.commit()
+            logger.info(f" All responses for challenge {challenge_id} marked as evaluated (skipped due to 404).")
+    
+        except Exception as e:
+            conn.rollback()  # 
+            logger.error(f" Error updating responses for challenge {challenge_id}: {str(e)}")
+    
+        finally:
+            cursor.close()
+            conn.close() 
+
+
+    
