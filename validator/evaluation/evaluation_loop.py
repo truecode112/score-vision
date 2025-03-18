@@ -339,6 +339,10 @@ async def evaluate_pending_responses(
         
         # Get video path
         video_path = await validator.download_video(challenge['video_url'])
+        if video_path is None:
+            logger.warning(f"Skipping challenge {challenge.challenge_id} due to missing video (404).")
+            db_manager.mark_responses_failed(challenge.challenge_id)
+            return
         if not video_path or not video_path.exists():
             logger.error(f"Failed to download video for challenge {challenge['challenge_id']}")
             return
