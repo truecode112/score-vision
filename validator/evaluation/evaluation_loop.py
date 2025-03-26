@@ -14,7 +14,6 @@ from validator.challenge.challenge_types import GSRResponse, ValidationResult, G
 from validator.evaluation.calculate_score import calculate_score
 from validator.utils.api import update_task_scores
 from validator.config import VALIDATION_DELAY, FRAMES_TO_VALIDATE
-from validator.evaluation.prompts import COUNT_PROMPT
 from loguru import logger
 import cv2
 from dataclasses import dataclass
@@ -119,28 +118,12 @@ class EvaluationQueue:
                         'frame_id': frame_idx
                     })
                     
-        if frames_to_process:
-            reference_results = await self.validator.vlm_processor.get_reference_counts_batch(
-                frames_to_process,
-                COUNT_PROMPT
-            )
-            
-            for frame_data, result in zip(frames_to_process, reference_results):
-                frame_idx = frame_data['frame_id']
-                try:
-                    if result:
-                        counts = json.loads(result)
-                        if isinstance(counts, dict):
-                            self.validator.frame_reference_counts[frame_idx] = counts
-                except Exception as e:
-                    logger.error(f"Error processing reference counts: {str(e)}")
         
         # Process each frame in the batch
         for frame_idx in batch_frames:
             try:
                 frame = task.frame_cache[frame_idx]['frame']
                 frame_data = task.response.frames.get(str(frame_idx), {})
-                ref_counts = self.validator.frame_reference_counts.get(frame_idx)
                 
                 score = await self.validator.validate_bbox_clip(
                     frame_idx=frame_idx,
@@ -153,7 +136,6 @@ class EvaluationQueue:
                     "scores": {
                         "bbox_score": score,
                         "keypoint_score": 0.0,
-                        "count_match_score": 0.0,
                         "final_score": score
                     }
                 }                
@@ -425,13 +407,10 @@ async def evaluate_pending_responses(
                             "frame_number": frame_num,
                             "keypoint_score": result["scores"]["keypoint_score"],
                             "bbox_score": result["scores"]["bbox_score"],
-                            "count_match_score": result["scores"]["count_match_score"],
                             "final_score": frame_score,
                             "debug_frame_path": frame_path,
                             "num_objects": len(result.get("objects", [])),
-                            "num_keypoints": len(result.get("keypoints", {}).get("points", [])),
-                            "reference_counts": result.get("count_validation", {}).get("reference_counts", {}),
-                            "detected_counts": result.get("count_validation", {}).get("high_confidence_counts", {})
+                            "num_keypoints": len(result.get("keypoints", {}).get("points", []))
                         })
                         logger.info(f"Frame {frame_num} score: {frame_score:.3f}")
                 
