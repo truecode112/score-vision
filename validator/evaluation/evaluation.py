@@ -20,6 +20,7 @@ from validator.challenge.challenge_types import (
 from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
+from validator.evaluation.bbox_clip import evaluate_frame
 
 FRAME_TIMEOUT = 180.0  # seconds
 
@@ -169,24 +170,6 @@ class GSRValidator:
             logger.error(f"Reference count error: {str(e)}")
             return {}
 
-    async def validate_bbox_content_batch(self, images: List[np.ndarray], expected_class: str) -> List[float]:
-        """
-        Validate multiple bounding boxes in one call with rate limiting.
-        """
-        if not images:
-            return []
-
-        # Prepare batch data
-        batch_data = []
-        for i, img in enumerate(images):
-            encoded = self.encode_image(img)
-            if encoded:
-                batch_data.append({
-                    "encoded_image": encoded,
-                    "bbox_id": i
-                })
-
-        return await self.vlm_processor.validate_bbox_content_batch(batch_data, expected_class)
 
     async def validate_keypoints(self, frame: np.ndarray, keypoints: list, frame_idx: int) -> float:
         """
@@ -238,158 +221,16 @@ class GSRValidator:
             logger.error(f"Error validating keypoints for frame {frame_idx}: {str(e)}")
             return 0.0
 
-    async def validate_frame_detections(
-        self,
-        frame: np.ndarray,
-        detections: Dict,
-        frame_idx: int,
-        challenge_id: str,
-        node_id: str,
-        reference_counts: Optional[Dict] = None,
-        response_id: Optional[str] = None
-    ) -> Dict:
-        """Validate frame detections including bounding boxes and keypoints."""
-        try:
-            # Log the actual detections being processed
-            logger.info(f"\nProcessing detections for response {response_id} (node {node_id}):")
-            logger.info(f"  - Frame index: {frame_idx}, - Objects detected: {len(detections.get('objects', []))}, - Keypoints detected: {len(detections.get('keypoints', []))}")
-            
-            # Log sample of objects for verification
-            # if detections.get('objects'):
-            #     sample_objects = detections['objects'][:2]  # Show first 2 objects
-            #     logger.info(f"  - Sample objects: {sample_objects}")
-            
-            # # Log sample of keypoints for verification    
-            # if detections.get('keypoints'):
-            #     sample_keypoints = detections['keypoints'][:2]  # Show first 2 keypoints
-            #     logger.info(f"  - Sample keypoints: {sample_keypoints}")
-
-            # Initialize results with default values
-            results = {
-                "objects": [],
-                "keypoints": {"score": 0.0, "points": [], "visualization_path": ""},
-                "scores": {
-                    "keypoint_score": 0.0,
-                    "bbox_score": 0.0,
-                    "count_match_score": 0.0,
-                    "final_score": 0.0
-                },
-                "debug_frame_path": "",
-                "timing": {}
-            }
-
-            async def _process_frame():
-                start = datetime.now()
-                logger.info(f"Validating frame {frame_idx} (challenge {challenge_id}, node {node_id})")
-
-                # Run validations concurrently
-                filtered = self.filter_detections(detections, frame.shape)
-                kpts = filtered.get("keypoints", [])
-                #logger.info(f"Processing {len(kpts)} keypoints for frame {frame_idx}")
-                kpt_score_task = self.validate_keypoints(frame, kpts, frame_idx)
-
-                # Process objects first
-                class_map = {}
-                for obj in filtered.get("objects", []):
-                    cls = self.get_class_name(obj["class_id"])
-                    x1, y1, x2, y2 = obj["bbox"]
-                    crop = frame[y1:y2, x1:x2]
-                    if cls not in class_map:
-                        class_map[cls] = {"images": [], "objs": []}
-                    class_map[cls]["images"].append(crop)
-                    class_map[cls]["objs"].append(obj)
-
-                # Process each class with rate limiting
-                obj_scores = []
-                for cls, group in class_map.items():
-                    confs = await self.validate_bbox_content_batch(group["images"], cls)
-                    for ob, c in zip(group["objs"], confs):
-                        obj_scores.append({"class": cls, "score": c})
-                        results["objects"].append({
-                            "bbox_idx": ob["id"],
-                            "class": cls,
-                            "class_id": ob["class_id"],
-                            "probability": c
-                        })
-
-                # Calculate scores
-                box_score = self.calculate_bbox_confidence_score(results)
-                
-                # Get reference counts - use cached version if available
-                ref_counts = None
-                if frame_idx in self.frame_reference_counts:
-                    ref_counts = self.frame_reference_counts[frame_idx]
-                elif reference_counts:
-                    ref_counts = reference_counts
-                else:
-                    # Only fetch if absolutely necessary
-                    logger.warning(f"No cached reference counts for frame {frame_idx}, fetching new...")
-                    ref_counts = await self.get_reference_counts(frame)
-                    self.frame_reference_counts[frame_idx] = ref_counts
-                    
-                kpt_score = await kpt_score_task
-                results["keypoints"] = {
-                    "score": kpt_score,
-                    "points": kpts,
-                    "visualization_path": ""
-                }
-
-                count_val = self.compare_with_reference_counts(ref_counts, results)
-                final_score = self.calculate_final_score(kpt_score, box_score, count_val["match_score"])
-
-                # Save debug visualization
-                ann = self.draw_annotations(frame, filtered)
-                ann_resized = self.resize_frame(ann, target_width=400)
-
-                current_date = datetime.now().strftime("%Y%m%d")
-                dbg_dir = Path("debug_frames") / current_date
-                dbg_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                # Include response_id in filename if available
-                filename_parts = [
-                    f"challenge_{challenge_id}",
-                    f"node_{node_id}",
-                    f"frame_{frame_idx}"
-                ]
-                if response_id:
-                    filename_parts.insert(1, f"resp_{response_id}")  # Insert after challenge_id
-                    
-                dbg_path = dbg_dir / f"{('_'.join(filename_parts))}_{ts}.jpg"
-                cv2.imwrite(str(dbg_path), ann_resized)
-
-                # Update results
-                results["scores"].update({
-                    "keypoint_score": kpt_score,
-                    "bbox_score": box_score,
-                    "count_match_score": count_val["match_score"],
-                    "final_score": final_score
-                })
-                results["debug_frame_path"] = str(dbg_path)
-                results["count_validation"] = count_val
-                results["scoring_details"] = {
-                    "keypoint_score": {"score": kpt_score, "weight": 0.4},
-                    "bbox_score": {"score": box_score, "weight": 0.4, "object_scores": obj_scores},
-                    "count_match_score": {
-                        "score": count_val["match_score"],
-                        "weight": 0.2,
-                        "reference_counts": ref_counts,
-                        "detected_counts": count_val["high_confidence_counts"]
-                    }
-                }
-                results["timing"] = {
-                    "total_time": (datetime.now() - start).total_seconds()
-                }
-
-            await asyncio.wait_for(_process_frame(), timeout=FRAME_TIMEOUT)
-
-        except asyncio.TimeoutError:
-            logger.error(f"Frame {frame_idx} validation timed out")
-        except Exception as e:
-            logger.error(f"Frame {frame_idx} validation error: {str(e)}")
-
-        return results
-
+    async def validate_bbox_clip(self, frame_idx: int, frame, detections: dict) -> float:
+    try:
+        objects = detections.get("objects", [])
+        if not objects:
+            return 0.0
+        return evaluate_frame(frame_idx, frame.copy(), objects)
+    except Exception as e:
+        logger.error(f"[Frame {frame_idx}] BBox CLIP validation failed: {e}")
+        return 0.0
+        
     async def evaluate_response(
         self,
         response: GSRResponse,
@@ -594,7 +435,7 @@ class GSRValidator:
             (bbox_score * BOX_W) +
             (count_match * CNT_W)
         )
-
+    
     def compare_with_reference_counts(self, ref_counts: Dict[str, int], results: Dict) -> Dict:
         """
         Compare the number of high-confidence detections vs. reference counts.
