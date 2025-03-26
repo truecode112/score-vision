@@ -18,7 +18,7 @@ from validator.challenge.challenge_types import (
     ValidationResult
 )
 from validator.config import FRAMES_TO_VALIDATE
-from validator.evaluation.prompts import COUNT_PROMPT, VALIDATION_PROMPT
+from validator.evaluation.prompts import VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
 from validator.evaluation.bbox_clip import evaluate_frame
 
@@ -56,7 +56,6 @@ class GSRValidator:
         self.db_manager = None
         self._video_cache = {}
         self.vlm_processor = VLMProcessor(openai_api_key)
-        self.frame_reference_counts = {}  # Cache for reference counts
 
     def encode_image(self, image):
         """Base64-encode an image."""
@@ -121,54 +120,6 @@ class GSRValidator:
                     if 'path' in locals() and path.exists():
                         path.unlink()
                     raise ValueError(f"Failed to download: {str(e)}")
-
-    async def get_reference_counts(self, frame: np.ndarray) -> Dict:
-        """
-        Count key entities in the frame.
-        Uses a system prompt, fallback handled by ask_vlm.
-        """
-        encoded = self.encode_image(frame)
-        frames_data = [{
-            "encoded_image": encoded,
-            "frame_id": "single"
-        }]
-        
-        results = await self.vlm_processor.get_reference_counts_batch(frames_data, COUNT_PROMPT)
-        if not results or not results[0]:
-            logger.warning("VLM returned empty content for reference counts")
-            return {}
-            
-        try:
-            cleaned_content = results[0]
-            counts = json.loads(cleaned_content)
-            if not isinstance(counts, dict):
-                logger.warning(f"VLM response is not a dictionary: {counts}")
-                return {}
-                
-            # Normalize the keys
-            normalized = {}
-            for key, value in counts.items():
-                key = key.lower()
-                if isinstance(value, (int, float)):
-                    if "ball" in key or "soccer ball" in key:
-                        normalized["soccer ball"] = int(value)
-                    elif "goalkeeper" in key:
-                        normalized["goalkeeper"] = int(value)
-                    elif "referee" in key:
-                        normalized["referee"] = int(value)
-                    elif "player" in key:
-                        normalized["player"] = int(value)
-            
-            logger.info(f"Normalized counts: {normalized}")
-            return normalized
-            
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse VLM response as JSON: {cleaned_content}")
-            return {}
-            
-        except Exception as e:
-            logger.error(f"Reference count error: {str(e)}")
-            return {}
 
 
     async def validate_keypoints(self, frame: np.ndarray, keypoints: list, frame_idx: int) -> float:
@@ -272,36 +223,12 @@ class GSRValidator:
                         'frame_id': frame_idx
                     })
 
-        if frames_to_process:
-            reference_results = await self.vlm_processor.get_reference_counts_batch(frames_to_process, COUNT_PROMPT)
-            for frame_data, result in zip(frames_to_process, reference_results):
-                frame_idx = frame_data['frame_id']
-                try:
-                    if result:
-                        counts = json.loads(result)
-                        if isinstance(counts, dict):
-                            normalized = {}
-                            for key, value in counts.items():
-                                key = key.lower()
-                                if isinstance(value, (int, float)):
-                                    if "ball" in key:
-                                        normalized["ball"] = int(value)
-                                    elif "goalkeeper" in key:
-                                        normalized["goalkeeper"] = int(value)
-                                    elif "referee" in key:
-                                        normalized["referee"] = int(value)
-                                    elif "player" in key:
-                                        normalized["player"] = int(value)
-                            self.frame_reference_counts[frame_idx] = normalized
-                except Exception as e:
-                    logger.error(f"Error processing reference counts for frame {frame_idx}: {str(e)}")
 
         tasks = []
         for frame_idx in frames_to_validate:
             try:
                 frame = frame_cache[frame_idx]['frame']
                 frame_data = response.frames.get(str(frame_idx), {})
-                ref_counts = self.frame_reference_counts.get(frame_idx)
                 
                 tasks.append((frame_idx, asyncio.create_task(
                     self.validate_frame_detections(
@@ -310,7 +237,6 @@ class GSRValidator:
                         frame_idx=frame_idx,
                         challenge_id=challenge.challenge_id,
                         node_id=response.node_id,
-                        reference_counts=ref_counts,
                         response_id=response.response_id
                     )
                 )))
@@ -329,12 +255,8 @@ class GSRValidator:
                     feed = {
                         "scores": {
                             "keypoint_score": scores["keypoint_score"],
-                            "bbox_score": scores["bbox_score"],
-                            "count_match_score": scores["count_match_score"]
+                            "bbox_score": scores["bbox_score"]
                         },
-                        "reference_counts": data["count_validation"]["reference_counts"],
-                        "detected_counts": data["count_validation"]["high_confidence_counts"],
-                        "count_matches": data["count_validation"]["count_matches"],
                         "scoring_details": data["scoring_details"]
                     }
                     self.db_manager.store_frame_evaluation(
@@ -347,7 +269,6 @@ class GSRValidator:
                         frame_score=scores["final_score"],
                         raw_frame_path="",
                         annotated_frame_path=data["debug_frame_path"],
-                        vlm_response=data["count_validation"]["reference_counts"],
                         feedback=json.dumps(feed)
                     )
             except Exception as e:
@@ -425,114 +346,16 @@ class GSRValidator:
             weight_sum += w
         return total / weight_sum if weight_sum else 0.0
 
-    def calculate_final_score(self, keypoint_score: float, bbox_score: float, count_match: float) -> float:
+    def calculate_final_score(self, keypoint_score: float, bbox_score: float) -> float:
         """
         Combine keypoints, bboxes, and object counts into final 0..1.
         """
-        KEY_W, BOX_W, CNT_W = 0.4, 0.4, 0.2
+        KEY_W, BOX_W = 0.5, 0.5
         return (
             (keypoint_score * KEY_W) +
-            (bbox_score * BOX_W) +
-            (count_match * CNT_W)
+            (bbox_score * BOX_W) 
         )
     
-    def compare_with_reference_counts(self, ref_counts: Dict[str, int], results: Dict) -> Dict:
-        """
-        Compare the number of high-confidence detections vs. reference counts.
-        Returns normalized match scores per class and overall match score.
-        """
-        # Normalize reference counts first
-        normalized_ref = {
-            "player": 0,
-            "goalkeeper": 0,
-            "referee": 0,
-            "ball": 0
-        }
-        
-        if ref_counts:
-            for key, value in ref_counts.items():
-                key = key.lower()
-                if isinstance(value, (int, float)):
-                    if "ball" in key or "soccer ball" in key:
-                        normalized_ref["ball"] = int(value)
-                    elif "goalkeeper" in key:
-                        normalized_ref["goalkeeper"] = int(value)
-                    elif "referee" in key:
-                        normalized_ref["referee"] = int(value)
-                    elif "player" in key:
-                        normalized_ref["player"] = int(value)
-
-        # Count high confidence detections (prob >= 0.7)
-        high_conf = {
-            "player": 0,
-            "goalkeeper": 0,
-            "referee": 0,
-            "ball": 0
-        }
-
-        for obj in results.get("objects", []):
-            if obj.get("probability", 0) >= 0.7:
-                cls = obj["class"].lower()
-                if "ball" in cls:
-                    high_conf["ball"] += 1
-                elif "goalkeeper" in cls:
-                    high_conf["goalkeeper"] += 1
-                elif "referee" in cls:
-                    high_conf["referee"] += 1
-                elif "player" in cls:
-                    high_conf["player"] += 1
-
-        # Calculate match scores with importance weights
-        weights = {
-            "player": 0.4,    # Players are most important
-            "goalkeeper": 0.3, # Goalkeeper is important for team composition
-            "referee": 0.2,   # Referee is less critical but should be counted
-            "ball": 0.1      # Ball count is least important (usually just 1)
-        }
-
-        matches = {}
-        weighted_sum = 0
-        total_weight = 0
-
-        for cls in ["player", "goalkeeper", "referee", "ball"]:
-            ref = normalized_ref[cls]
-            detected = high_conf[cls]
-            
-            # Calculate match score for this class
-            if ref == 0 and detected == 0:
-                matches[cls] = 1.0  # Perfect match when both are 0
-            elif ref == 0:
-                matches[cls] = 0.0  # Penalize false positives
-            else:
-                # Calculate ratio and apply penalties
-                ratio = min(detected, ref) / ref
-                # Penalize overcounting more than undercounting
-                if detected > ref:
-                    excess = (detected - ref) / ref
-                    penalty = min(1.0, excess * 0.5)  # 50% penalty per excess count
-                    ratio = max(0.0, ratio - penalty)
-                matches[cls] = max(0.0, min(1.0, ratio))
-
-            weight = weights[cls]
-            weighted_sum += matches[cls] * weight
-            total_weight += weight
-
-        # Calculate final match score
-        match_score = weighted_sum / total_weight if total_weight > 0 else 0.0
-
-        # Log detailed information for debugging
-        logger.info("Count matching details:")
-        logger.info(f"Reference counts: {normalized_ref}")
-        logger.info(f"Detected counts: {high_conf}")
-        logger.info(f"Individual matches: {matches}")
-        logger.info(f"Final match score: {match_score}")
-
-        return {
-            "reference_counts": normalized_ref,
-            "high_confidence_counts": high_conf,
-            "count_matches": matches,
-            "match_score": match_score
-        }
 
     def select_random_frames(self, video_path: Path, num_frames: int = None) -> List[int]:
         """
