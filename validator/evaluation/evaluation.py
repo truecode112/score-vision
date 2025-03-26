@@ -222,14 +222,14 @@ class GSRValidator:
             return 0.0
 
     async def validate_bbox_clip(self, frame_idx: int, frame, detections: dict) -> float:
-    try:
-        objects = detections.get("objects", [])
-        if not objects:
+        try:
+            objects = detections.get("objects", [])
+            if not objects:
+                return 0.0
+            return evaluate_frame(frame_idx, frame.copy(), objects)
+        except Exception as e:
+            logger.error(f"[Frame {frame_idx}] BBox CLIP validation failed: {e}")
             return 0.0
-        return evaluate_frame(frame_idx, frame.copy(), objects)
-    except Exception as e:
-        logger.error(f"[Frame {frame_idx}] BBox CLIP validation failed: {e}")
-        return 0.0
         
     async def evaluate_response(
         self,
