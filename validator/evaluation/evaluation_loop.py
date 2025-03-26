@@ -17,6 +17,8 @@ from validator.config import VALIDATION_DELAY, FRAMES_TO_VALIDATE
 from loguru import logger
 import cv2
 from dataclasses import dataclass
+from validator.evaluation.keypoint_scoring import process_input_file, calculate_final_score
+
 
 # New constant for minimum number of players
 MIN_PLAYERS_PER_FRAME = 4
@@ -118,6 +120,10 @@ class EvaluationQueue:
                         'frame_id': frame_idx
                     })
                     
+        video_width = 1280
+        video_height = 720
+        scoring_result = await self.validator.validate_keypoints(task.response.frames, video_width, video_height)
+        per_frame_scores = scoring_result["per_frame_scores"]
         
         # Process each frame in the batch
         for frame_idx in batch_frames:
@@ -130,13 +136,15 @@ class EvaluationQueue:
                     frame=frame,
                     detections=frame_data
                 )
+                keypoint_score = per_frame_scores.get(str(frame_idx), {}).get("keypoint_score", 0.0)
+                final_score = (score + keypoint_score) / 2
                 result = {
                     "frame_id": frame_idx,
-                    "frame_score": score,
+                    "frame_score": final_score,
                     "scores": {
                         "bbox_score": score,
-                        "keypoint_score": 0.0,
-                        "final_score": score
+                        "keypoint_score": keypoint_score,
+                        "final_score": final_score
                     }
                 }                
                 results.append(result)
