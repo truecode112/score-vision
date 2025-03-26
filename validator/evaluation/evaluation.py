@@ -21,6 +21,7 @@ from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
 from validator.evaluation.bbox_clip import evaluate_frame
+from validator.evaluation.keypoint_scoring import process_input_file
 
 FRAME_TIMEOUT = 180.0  # seconds
 
@@ -122,55 +123,56 @@ class GSRValidator:
                     raise ValueError(f"Failed to download: {str(e)}")
 
 
-    async def validate_keypoints(self, frame: np.ndarray, keypoints: list, frame_idx: int) -> float:
+    async def validate_keypoints(self, frames: dict, video_width: int, video_height: int) -> dict:
         """
-        Validate keypoints. Uses batched VLM processor.
-        Expects a numeric score from 0.0 to 1.0.
+        Uses the advanced scoring system for keypoints.
+        Returns per-frame keypoint scores and stats.
         """
-        if not keypoints:
-            logger.info(f"No keypoints to validate for frame {frame_idx}")
-            return 0.0
-
-        # Filter out zero coordinates and round to 2 decimals
-        valid_keypoints = filter_keypoints(keypoints)
-        if not valid_keypoints:
-            logger.info(f"No valid keypoints after filtering for frame {frame_idx}")
-            return 0.0
-
-        #logger.info(f"Validating {len(valid_keypoints)} keypoints for frame {frame_idx}")
-
-        kp_frame = frame.copy()
-        for (x, y) in valid_keypoints:
-                cv2.circle(kp_frame, (int(x), int(y)), 5, COLORS["keypoint"], -1)
-
-        ref_path = Path(__file__).parent / "pitch-keypoints.jpg"
-        ref_img = cv2.imread(str(ref_path))
-        if ref_img is None:
-            logger.error(f"Failed to load reference keypoint image from {ref_path}")
-            return 0.0
-
-        ref_encoded = self.encode_image(ref_img)
-        kp_encoded = self.encode_image(kp_frame)
-        
-        if not (ref_encoded and kp_encoded):
-            logger.error("Failed to encode reference or keypoint images")
-            return 0.0
-
-        frames_data = [{
-            "reference_image": ref_encoded,
-            "keypoint_image": kp_encoded,
-            "frame_id": frame_idx
-        }]
-
         try:
-            logger.info(f"Sending keypoint validation request for frame {frame_idx}")
-            results = await self.vlm_processor.validate_keypoints_batch(frames_data, VALIDATION_PROMPT)
-            score = results[0] if results else 0.0
-            logger.info(f"Keypoint validation score for frame {frame_idx}: {score}")
-            return score
+            (
+                results,
+                valid_frames,
+                avg_inlier_ratio,
+                avg_reprojection_error,
+                avg_keypoint_score,
+                player_score,
+                avg_jump,
+                total_jumps,
+                biggest_jump,
+                large_jumps,
+                transitions,
+                avg_keypoint_stability,
+                avg_homography_stability,
+                avg_player_plausibility
+            ) = process_input_file(frames, video_width, video_height)
+    
+            final_score = calculate_final_score(
+                avg_keypoint_score,
+                player_score,
+                avg_keypoint_stability,
+                avg_homography_stability,
+                avg_player_plausibility
+            )
+    
+            return {
+                "per_frame_scores": results,
+                "final_score": final_score,
+                "components": {
+                    "avg_keypoint_score": avg_keypoint_score,
+                    "player_score": player_score,
+                    "avg_keypoint_stability": avg_keypoint_stability,
+                    "avg_homography_stability": avg_homography_stability,
+                    "avg_player_plausibility": avg_player_plausibility
+                }
+            }
+    
         except Exception as e:
-            logger.error(f"Error validating keypoints for frame {frame_idx}: {str(e)}")
-            return 0.0
+            logger.error(f"Error in new keypoint validation: {str(e)}")
+            return {
+                "per_frame_scores": {},
+                "final_score": 0.0,
+                "components": {}
+            }
 
     async def validate_bbox_clip(self, frame_idx: int, frame, detections: dict) -> float:
         try:
