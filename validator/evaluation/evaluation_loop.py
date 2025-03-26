@@ -142,16 +142,21 @@ class EvaluationQueue:
                 frame_data = task.response.frames.get(str(frame_idx), {})
                 ref_counts = self.validator.frame_reference_counts.get(frame_idx)
                 
-                result = await self.validator.validate_frame_detections(
-                    frame=frame,
-                    detections=frame_data,
+                score = await self.validator.validate_bbox_clip(
                     frame_idx=frame_idx,
-                    challenge_id=task.challenge['challenge_id'],
-                    node_id=task.response.node_id,
-                    reference_counts=ref_counts,
-                    response_id=task.response.response_id
+                    frame=frame,
+                    detections=frame_data
                 )
-                
+                result = {
+                    "frame_id": frame_idx,
+                    "frame_score": score,
+                    "scores": {
+                        "bbox_score": score,
+                        "keypoint_score": 0.0,
+                        "count_match_score": 0.0,
+                        "final_score": score
+                    }
+                }                
                 results.append(result)
                 
             except Exception as e:
