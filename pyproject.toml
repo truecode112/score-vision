@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "score-vision"
-version = "0.2.0"
+version = "0.3.0"
 description = "Score Vision - Soccer Video Analysis Framework"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,6 +60,8 @@ validator = [
     "tenacity>=8.2.3",
     "pytz>=2023.3",
     "bt-decode==0.5.0a2",
+    "transformers>=4.36.2",
+    "torch>=2.2.0",
     "async-substrate-interface==1.0.0",
     "fiber[full] @ git+https://github.com/rayonlabs/fiber.git@2.3.0#egg=fiber"
 ]
