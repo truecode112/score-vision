@@ -268,57 +268,6 @@ async def _evaluate_single_response(
             logger.error(f"Available row keys: {row.keys()}")
         raise
 
-async def select_frames_with_players(
-    validator: GSRValidator,
-    video_path: Path,
-    db_manager: DatabaseManager,
-    challenge_id: str,
-    num_frames: int = FRAMES_TO_VALIDATE
-) -> List[int]:
-    """
-    Select frames that contain at least MIN_PLAYERS_PER_FRAME players on average.
-    """
-    all_frames = validator.select_random_frames(video_path, INITIAL_FRAME_SAMPLE_SIZE)
-    frame_cache = {}
-    player_counts = {frame: [] for frame in all_frames}
-
-    # Get a sample of responses for this challenge
-    responses = db_manager.get_sample_responses(challenge_id, RESPONSES_TO_CHECK)
-
-    for frame in all_frames:
-        cap = cv2.VideoCapture(str(video_path))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
-        ret, frame_image = cap.read()
-        cap.release()
-        if ret:
-            frame_cache[frame] = {'frame': frame_image}
-
-    for response in responses:
-        response_data = json.loads(response["response_data"])
-        for frame in all_frames:
-            frame_data = response_data.get("frames", {}).get(str(frame), {})
-            player_count = sum(1 for obj in frame_data.get("objects", []) 
-                               if obj["class_id"] in [1, 2])  # goalkeeper and player
-            player_counts[frame].append(player_count)
-
-    # Calculate average player count for each frame
-    avg_player_counts = {frame: sum(counts) / len(counts) if counts else 0 
-                         for frame, counts in player_counts.items()}
-
-    # Select frames with sufficient players
-    selected_frames = [frame for frame, avg_count in avg_player_counts.items() 
-                       if avg_count >= MIN_PLAYERS_PER_FRAME]
-
-    # If we don't have enough frames, add the ones with the highest average player count
-    if len(selected_frames) < num_frames:
-        remaining_frames = sorted(
-            [f for f in all_frames if f not in selected_frames],
-            key=lambda f: avg_player_counts[f],
-            reverse=True
-        )
-        selected_frames.extend(remaining_frames[:num_frames - len(selected_frames)])
-
-    return selected_frames[:num_frames]
 
 async def evaluate_pending_responses(
     validator: GSRValidator,
@@ -349,14 +298,20 @@ async def evaluate_pending_responses(
             return
 
         # Select frames for this challenge
-        frames = await select_frames_with_players(
-            validator,
-            video_path,
-            db_manager,
-            challenge['challenge_id']
-        )
-        logger.info(f"Selected {len(frames)} frames for challenge {challenge['challenge_id']}")
-
+        video_cap = cv2.VideoCapture(str(video_path))
+        frames = []
+        for idx in range(int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))):
+            video_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            success, frame = video_cap.read()
+            if not success:
+                continue
+            tmp_path = Path(tempfile.gettempdir()) / f"frame_{challenge['challenge_id']}_{idx}.jpg"
+            cv2.imwrite(str(tmp_path), frame)
+            score = detect_pitch(str(tmp_path))
+            if score == 1:
+                frames.append(idx)
+        video_cap.release()
+        
         # Pre-load frames into cache
         frame_cache = {}
         for frame_idx in frames:
