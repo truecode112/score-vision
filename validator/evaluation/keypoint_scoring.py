@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import json
 import argparse
-from sports.configs.soccer import SoccerPitchConfiguration
+from miner.sports.configs.soccer import SoccerPitchConfiguration
 from collections import defaultdict
 
 def preprocess_keypoints(keypoints):
