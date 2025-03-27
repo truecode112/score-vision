@@ -16,8 +16,10 @@ from validator.utils.api import update_task_scores
 from validator.config import VALIDATION_DELAY, FRAMES_TO_VALIDATE
 from loguru import logger
 import cv2
+import tempfile
 from dataclasses import dataclass
 from validator.evaluation.keypoint_scoring import process_input_file, calculate_final_score
+from validator.utils.frame_filter import detect_pitch
 
 
 # New constant for minimum number of players
