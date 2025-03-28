@@ -18,7 +18,6 @@ from loguru import logger
 import cv2
 import tempfile
 from dataclasses import dataclass
-from validator.evaluation.keypoint_scoring import process_input_file, calculate_final_score
 from validator.utils.frame_filter import detect_pitch
 
 
