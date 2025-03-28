@@ -57,6 +57,7 @@ class GSRValidator:
         self.db_manager = None
         self._video_cache = {}
         self.vlm_processor = VLMProcessor(openai_api_key)
+        self.frame_reference_counts = {}
 
     def encode_image(self, image):
         """Base64-encode an image."""
