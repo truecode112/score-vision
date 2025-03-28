@@ -647,7 +647,7 @@ def main():
     print(f"Homography Stability Score: {avg_homography_stability:.2f}")
     print(f"Player Movement Plausibility Score: {avg_player_plausibility:.2f}")
     
-    final_score = calculate_final_score(
+    final_score = calculate_final_score_keypoints(
         avg_keypoint_score, 
         player_score, 
         avg_keypoint_stability, 
