@@ -20,28 +20,28 @@ logger = get_logger(__name__)
 class DatabaseManager:
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        
+
         # Initialize database if needed
         if not check_db_initialized(str(db_path)):
             logger.info(f"Initializing new database at {db_path}")
             init_db(str(db_path))
-            
+
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         logger.info(f"Connected to database at {db_path}")
-        
+
     def close(self):
         if self.conn:
             self.conn.close()
-        
+
     def get_connection(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
-        
+
     def store_challenge(self, challenge_id: int, challenge_type: str, video_url: str, task_name: str = None) -> None:
         """Store a new challenge in the database"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT OR IGNORE INTO challenges (
@@ -54,22 +54,22 @@ class DatabaseManager:
                 video_url,
                 task_name
             ))
-            
+
             if cursor.rowcount == 0:
                 logger.debug(f"Challenge {challenge_id} already exists in database")
             else:
                 logger.info(f"Stored new challenge {challenge_id} in database")
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
-            
+
     def assign_challenge(self, challenge_id: str, miner_hotkey: str, node_id: int) -> None:
         """Assign a challenge to a miner"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT OR IGNORE INTO challenge_assignments (
@@ -84,9 +84,9 @@ class DatabaseManager:
                 miner_hotkey,
                 node_id
             ))
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
@@ -94,16 +94,16 @@ class DatabaseManager:
         """Mark a challenge as sent to a miner"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE challenge_assignments
                 SET status = 'sent', sent_at = CURRENT_TIMESTAMP
                 WHERE challenge_id = ? AND miner_hotkey = ?
             """, (challenge_id, miner_hotkey))
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
@@ -111,23 +111,23 @@ class DatabaseManager:
         """Mark a challenge as failed for a miner"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE challenge_assignments
                 SET status = 'failed'
                 WHERE challenge_id = ? AND miner_hotkey = ?
             """, (challenge_id, miner_hotkey))
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
     def store_response(
-        self, 
-        challenge_id: str, 
-        miner_hotkey: str, 
+        self,
+        challenge_id: str,
+        miner_hotkey: str,
         response: GSRResponse,
         node_id: int,
         processing_time: float = None,
@@ -137,13 +137,13 @@ class DatabaseManager:
         """Store a miner's response to a challenge"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             now = datetime.utcnow()
-            
+
             # Convert response to dict and handle frames data
             response_dict = response.to_dict()
-            
+
             # Store response
             cursor.execute("""
                 INSERT INTO responses (
@@ -165,9 +165,9 @@ class DatabaseManager:
                 received_at,
                 completed_at
             ))
-            
+
             response_id = cursor.lastrowid
-            
+
             # Mark challenge as completed in challenge_assignments
             cursor.execute("""
                 UPDATE challenge_assignments
@@ -175,13 +175,13 @@ class DatabaseManager:
                     completed_at = ?
                 WHERE challenge_id = ? AND miner_hotkey = ?
             """, (now, challenge_id, miner_hotkey))
-            
+
             conn.commit()
             return response_id
-            
+
         finally:
             conn.close()
-            
+
     def store_response_score(
         self,
         response_id: int,
@@ -197,7 +197,7 @@ class DatabaseManager:
         """Store the evaluation result for a response"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT INTO response_scores (
@@ -216,9 +216,9 @@ class DatabaseManager:
                 total_score,
                 datetime.utcnow()
             ))
-            
+
             conn.commit()
-            
+
         except Exception as e:
             logger.error(f"Error storing response score: {str(e)}")
             conn.rollback()
@@ -243,10 +243,10 @@ class DatabaseManager:
         """Store a frame evaluation result"""
         if response_id is None:
             raise ValueError("response_id is required for frame evaluation")
-            
+
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT INTO frame_evaluations (
@@ -277,10 +277,10 @@ class DatabaseManager:
                 json.dumps(vlm_response),
                 feedback
             ))
-            
+
             conn.commit()
             logger.info(f"Stored frame evaluation for response {response_id}, frame {frame_id}")
-            
+
         except Exception as e:
             logger.error(f"Error storing frame evaluation: {str(e)}")
             raise
@@ -290,7 +290,7 @@ class DatabaseManager:
     def get_miner_scores(self) -> Dict[int, Dict[str, Any]]:
         """Get calculated scores for miners from the last 72 hours"""
         query = """
-        SELECT 
+        SELECT
             r.node_id,
             r.miner_hotkey,
             AVG(rs.evaluation_score) as performance_score,
@@ -298,22 +298,28 @@ class DatabaseManager:
             AVG(rs.availability_score) as availability_score,
             AVG(r.processing_time) as avg_processing_time,
             COUNT(*) as response_count,
-            AVG(rs.total_score) as final_score
+            AVG(rs.total_score) as final_score,
+            MAX(r.received_at) as last_active
         FROM responses r
         JOIN response_scores rs ON r.response_id = rs.response_id
         WHERE r.received_at >= datetime('now', '-72 hours')
         GROUP BY r.node_id, r.miner_hotkey
         HAVING response_count > 0
         """
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query)
             rows = cursor.fetchall()
-            
+
             miner_scores = {}
             for row in rows:
                 node_id = int(row[0])
+                more_recent_entry_already_exists = node_id in miner_scores and (
+                    row[8] < miner_scores[node_id]['last_active']
+                )
+                if more_recent_entry_already_exists:
+                    continue
                 miner_scores[node_id] = {
                     'miner_hotkey': row[1],
                     'performance_score': row[2],
@@ -321,16 +327,17 @@ class DatabaseManager:
                     'availability_score': row[4],
                     'avg_processing_time': row[5],
                     'response_count': row[6],
-                    'final_score': row[7]
+                    'final_score': row[7],
+                    'last_active': row[8]
                 }
-            
+
             logger.info(f"Fetched scores for {len(miner_scores)} miners")
             return miner_scores
 
     def get_miner_scores_with_node_id(self) -> Dict[int, Dict[str, Any]]:
         """Get calculated scores for miners from the last 72 hours, including node_id"""
         query = """
-        SELECT 
+        SELECT
             r.node_id,
             r.miner_hotkey,
             AVG(rs.evaluation_score) as performance_score,
@@ -338,22 +345,28 @@ class DatabaseManager:
             AVG(rs.availability_score) as availability_score,
             AVG(r.processing_time) as avg_processing_time,
             COUNT(*) as response_count,
-            AVG(rs.speed_score * 0.3 + rs.evaluation_score * 0.6 + rs.availability_score * 0.1) as final_score
+            AVG(rs.speed_score * 0.3 + rs.evaluation_score * 0.6 + rs.availability_score * 0.1) as final_score,
+            MAX(r.received_at) as last_active
         FROM responses r
         JOIN response_scores rs ON r.response_id = rs.response_id
         WHERE r.received_at >= datetime('now', '-72 hours')
         GROUP BY r.node_id, r.miner_hotkey
         HAVING response_count > 0
         """
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query)
             rows = cursor.fetchall()
-            
+
             miner_scores = {}
             for row in rows:
                 node_id = int(row[0])
+                more_recent_entry_already_exists = node_id in miner_scores and (
+                    row[8] < miner_scores[node_id]['last_active']
+                )
+                if more_recent_entry_already_exists:
+                    continue
                 miner_scores[node_id] = {
                     'miner_hotkey': row[1],
                     'performance_score': row[2],
@@ -361,9 +374,10 @@ class DatabaseManager:
                     'availability_score': row[4],
                     'avg_processing_time': row[5],
                     'response_count': row[6],
-                    'final_score': row[7]
+                    'final_score': row[7],
+                    'last_active': row[8]
                 }
-            
+
             return miner_scores
 
     def get_challenge(self, challenge_id: str) -> Optional[Dict]:
@@ -373,13 +387,13 @@ class DatabaseManager:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT c.*, ca.sent_at 
+                SELECT c.*, ca.sent_at
                 FROM challenges c
                 LEFT JOIN challenge_assignments ca ON c.challenge_id = ca.challenge_id
                 WHERE c.challenge_id = ?
             """, (challenge_id,))
             row = cursor.fetchone()
-            
+
             if row:
                 return dict(row)
             return None
@@ -389,7 +403,7 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO miner_availability 
+                INSERT INTO miner_availability
                 (miner_hotkey, node_id, is_available)
                 VALUES (?, ?, ?)
             """, (miner_hotkey, node_id, is_available))
@@ -405,11 +419,11 @@ class DatabaseManager:
         """Get frame evaluations with optional filters"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             sql = "SELECT * FROM frame_evaluations WHERE 1=1"
             params = []
-            
+
             if challenge_id:
                 sql += " AND challenge_id = ?"
                 params.append(challenge_id)
@@ -422,21 +436,21 @@ class DatabaseManager:
             if response_id:
                 sql += " AND response_id = ?"
                 params.append(response_id)
-                
+
             sql += " ORDER BY frame_timestamp ASC"
-            
+
             cursor.execute(sql, params)
             rows = cursor.fetchall()
-            
+
             results = []
             for row in rows:
                 result = dict(row)
                 if result['vlm_response']:
                     result['vlm_response'] = json.loads(result['vlm_response'])
                 results.append(result)
-                
+
             return results
-            
+
         finally:
             conn.close()
 
@@ -444,19 +458,19 @@ class DatabaseManager:
         """
         Get processing time statistics for all responses to the same challenge.
         Processing times are in seconds.
-        
+
         Args:
             challenge_id: The challenge ID to get stats for
-            
+
         Returns:
             Dict with avg_time, min_time, max_time in seconds
         """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
-                SELECT 
+                SELECT
                     AVG(processing_time) as avg_time,
                     MIN(processing_time) as min_time,
                     MAX(processing_time) as max_time
@@ -464,7 +478,7 @@ class DatabaseManager:
                 WHERE challenge_id = ?
                 AND processing_time > 0
             """, (str(challenge_id),))
-            
+
             row = cursor.fetchone()
             if row:
                 return {
@@ -477,7 +491,7 @@ class DatabaseManager:
                 'min_time': 5.0,
                 'max_time': 200.0
             }
-            
+
         finally:
             conn.close()
 
@@ -485,10 +499,10 @@ class DatabaseManager:
         """Get completed tasks from the last N hours"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
-                SELECT 
+                SELECT
                     ca.challenge_id,
                     ca.node_id,
                     ca.miner_hotkey,
@@ -503,7 +517,7 @@ class DatabaseManager:
                 AND ca.received_at >= datetime('now', ? || ' hours')
                 ORDER BY ca.received_at DESC
             """, (-hours,))
-            
+
             rows = cursor.fetchall()
             tasks = []
             for row in rows:
@@ -518,9 +532,9 @@ class DatabaseManager:
                     'task_name': row[7]
                 }
                 tasks.append(task)
-                
+
             return tasks
-            
+
         finally:
             conn.close()
 
@@ -542,7 +556,7 @@ class DatabaseManager:
     def get_unevaluated_responses(self, challenge_id: str) -> List[Dict]:
         """Get responses for a challenge that haven't been evaluated yet"""
         query = """
-        SELECT 
+        SELECT
             r.response_id,
             r.challenge_id,
             r.node_id,
@@ -553,12 +567,12 @@ class DatabaseManager:
         LEFT JOIN response_scores rs ON r.response_id = rs.response_id
         WHERE r.challenge_id = ? AND rs.response_id IS NULL
         """
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, (challenge_id,))
             rows = cursor.fetchall()
-            
+
             responses = []
             for row in rows:
                 # Create GSRResponse compatible dict
@@ -569,7 +583,7 @@ class DatabaseManager:
                     'processing_time': row[4],
                     'frames': {}
                 }
-                
+
                 # Parse response_data JSON and extract frames
                 if row[5]:  # response_data
                     try:
@@ -584,11 +598,11 @@ class DatabaseManager:
                     except json.JSONDecodeError as e:
                         logger.error(f"Failed to parse response data for response {row[0]}: {e}")
                         gsr_response['frames'] = {}
-                
+
                 # Add response_id as a separate field
                 gsr_response['response_id'] = row[0]
                 responses.append(gsr_response)
-            
+
             return responses
 
     def get_challenge(self, challenge_id: str) -> Optional[Dict]:
@@ -598,22 +612,22 @@ class DatabaseManager:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT c.*, ca.sent_at 
+                SELECT c.*, ca.sent_at
                 FROM challenges c
                 LEFT JOIN challenge_assignments ca ON c.challenge_id = ca.challenge_id
                 WHERE c.challenge_id = ?
             """, (challenge_id,))
-            
+
             row = cursor.fetchone()
             if row:
                 return dict(row)
             return None
-            
+
     def get_challenge_frames(self, challenge_id: str) -> List[int]:
         """Get frame numbers selected for a challenge"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT frame_number
@@ -621,9 +635,9 @@ class DatabaseManager:
                 WHERE challenge_id = ?
                 ORDER BY frame_number
             """, (challenge_id,))
-            
+
             return [row[0] for row in cursor.fetchall()]
-            
+
         finally:
             conn.close()
 
@@ -631,15 +645,15 @@ class DatabaseManager:
         """Store selected frame numbers for a challenge"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.executemany("""
                 INSERT INTO challenge_frames (challenge_id, frame_number)
                 VALUES (?, ?)
             """, [(challenge_id, frame_num) for frame_num in frame_numbers])
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
@@ -647,7 +661,7 @@ class DatabaseManager:
         """Get all frame scores for a response"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT frame_score
@@ -655,9 +669,9 @@ class DatabaseManager:
                 WHERE challenge_id = ? AND response_id = ?
                 ORDER BY frame_id
             """, (challenge_id, response_id))
-            
+
             return [row[0] for row in cursor.fetchall()]
-            
+
         finally:
             conn.close()
 
@@ -665,16 +679,16 @@ class DatabaseManager:
         """Update the overall score for a response and mark it as evaluated"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE responses
                 SET score = ?, evaluated = TRUE, evaluated_at = ?
                 WHERE id = ?
             """, (score, datetime.utcnow(), response_id))
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
@@ -683,7 +697,7 @@ class DatabaseManager:
         """Get availability score for a node over the last 24 hours"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT COUNT(CASE WHEN is_available THEN 1 END) * 1.0 / COUNT(*) as availability_score
@@ -698,11 +712,11 @@ class DatabaseManager:
     async def create_challenge(self, video_url: str, external_task_id: int) -> Optional[int]:
         """
         Create a new challenge in the database.
-        
+
         Args:
             video_url: URL of the video for the challenge
             external_task_id: Task ID from the external API
-            
+
         Returns:
             challenge_id if successful, None otherwise
         """
@@ -712,20 +726,20 @@ class DatabaseManager:
             VALUES (?, ?, CURRENT_TIMESTAMP)
             RETURNING challenge_id
             """
-            
+
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query, (video_url, external_task_id))
                 row = cursor.fetchone()
                 conn.commit()
-                
+
                 if row:
                     challenge_id = row[0]
                     logger.info(f"Created challenge {challenge_id} for external task {external_task_id}")
                     return challenge_id
-                    
+
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error creating challenge: {str(e)}")
             return None
@@ -734,16 +748,16 @@ class DatabaseManager:
         """Check if a miner has already been assigned a challenge"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT 1
                 FROM challenge_assignments
                 WHERE challenge_id = ? AND miner_hotkey = ?
             """, (challenge_id, miner_hotkey))
-            
+
             return cursor.fetchone() is not None
-            
+
         finally:
             conn.close()
 
@@ -758,7 +772,7 @@ class DatabaseManager:
         """Log an availability check for a miner with enhanced error handling."""
         try:
             query = """
-            INSERT INTO availability_checks 
+            INSERT INTO availability_checks
             (node_id, hotkey, checked_at, is_available, response_time_ms, error)
             VALUES (?, ?, ?, ?, ?, ?)
             """
@@ -767,12 +781,12 @@ class DatabaseManager:
                     query,
                     (node_id, hotkey, datetime.utcnow(), is_available, response_time_ms, error)
                 )
-            
+
             # Log the result
             status = "available" if is_available else "unavailable"
             error_msg = f" (Error: {error})" if error else ""
             logger.info(f"Node {node_id} ({hotkey}) is {status} - Response time: {response_time_ms:.2f}ms{error_msg}")
-            
+
         except Exception as e:
             logger.error(f"Failed to log availability check for node {node_id}: {str(e)}")
             # Don't raise the exception - we don't want availability logging to break the main flow
@@ -800,7 +814,7 @@ class DatabaseManager:
     ) -> Dict[str, Any]:
         """Get availability statistics for a node."""
         query = """
-        SELECT 
+        SELECT
             COUNT(*) as total_checks,
             SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END) as available_count,
             AVG(CASE WHEN is_available = 1 THEN response_time_ms ELSE NULL END) as avg_response_time
@@ -820,13 +834,13 @@ class DatabaseManager:
     def cleanup_old_data(self, days: int = 7) -> None:
         """
         Remove data older than the specified number of days from various tables.
-        
+
         Args:
             days: Number of days to keep data for. Default is 7.
         """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Define tables and their timestamp columns
             tables_to_clean = [
@@ -836,7 +850,7 @@ class DatabaseManager:
                 ("response_scores", "created_at"),
                 ("availability_checks", "checked_at")
             ]
-            
+
             for table, timestamp_column in tables_to_clean:
                 query = f"""
                 DELETE FROM {table}
@@ -845,7 +859,7 @@ class DatabaseManager:
                 cursor.execute(query)
                 deleted_rows = cursor.rowcount
                 logger.info(f"Deleted {deleted_rows} rows from {table} older than {days} days")
-            
+
             # Clean up challenges that are no longer referenced
             cursor.execute("""
                 DELETE FROM challenges
@@ -858,10 +872,10 @@ class DatabaseManager:
             """)
             deleted_challenges = cursor.rowcount
             logger.info(f"Deleted {deleted_challenges} orphaned challenges older than {days} days")
-            
+
             conn.commit()
             logger.info(f"Database cleanup completed for data older than {days} days")
-            
+
         except Exception as e:
             conn.rollback()
             logger.error(f"Error during database cleanup: {str(e)}")
@@ -872,16 +886,16 @@ class DatabaseManager:
         """Mark a response as evaluated"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE responses
                 SET evaluated = TRUE, evaluated_at = ?
                 WHERE response_id = ?
             """, (datetime.utcnow(), response_id))
-            
+
             conn.commit()
-            
+
         finally:
             conn.close()
 
@@ -889,7 +903,7 @@ class DatabaseManager:
         """Get the sent_at timestamp for a challenge assignment"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT sent_at
@@ -912,17 +926,17 @@ class DatabaseManager:
         """Update a response with evaluation results"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE responses
                 SET score = ?, evaluated = ?, evaluated_at = ?
                 WHERE response_id = ?
             """, (score, evaluated, evaluated_at, response_id))
-            
+
             conn.commit()
             logger.info(f"Updated response {response_id} with score {score}")
-            
+
         except Exception as e:
             logger.error(f"Error updating response {response_id}: {str(e)}")
             conn.rollback()
@@ -946,12 +960,12 @@ class DatabaseManager:
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            
+
             if fetch_one:
                 result = cursor.fetchone()
             else:
                 result = cursor.fetchall()
-                
+
             conn.commit()
             return result
         except Exception as e:
@@ -969,7 +983,7 @@ class DatabaseManager:
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 SELECT response_id, response_data
@@ -979,9 +993,9 @@ class DatabaseManager:
                 ORDER BY RANDOM()
                 LIMIT ?
             """, (challenge_id, sample_size))
-            
+
             return [dict(row) for row in cursor.fetchall()]
-            
+
         finally:
             cursor.close()
             conn.close()
@@ -989,20 +1003,20 @@ class DatabaseManager:
     async def get_pending_responses(self, challenge_id: str) -> List[GSRResponse]:
         """
         Get all unevaluated responses for a challenge.
-        
+
         Args:
             challenge_id: The challenge ID to get responses for
-            
+
         Returns:
             List of GSRResponse objects
         """
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
-                SELECT 
+                SELECT
                     response_id,
                     challenge_id,
                     miner_hotkey,
@@ -1016,10 +1030,10 @@ class DatabaseManager:
                   AND evaluated = FALSE
                   AND response_data IS NOT NULL
             """, (challenge_id,))
-            
+
             rows = cursor.fetchall()
             responses = []
-            
+
             for row in rows:
                 try:
                     response_data = json.loads(row["response_data"]) if row["response_data"] else {}
@@ -1035,36 +1049,33 @@ class DatabaseManager:
                 except Exception as e:
                     logger.error(f"Error processing response {row['response_id']}: {str(e)}")
                     continue
-                    
+
             logger.info(f"Found {len(responses)} pending responses for challenge {challenge_id}")
             return responses
-            
+
         finally:
             cursor.close()
             conn.close()
-            
+
     def mark_responses_failed(self, challenge_id):
         """Mark all responses for a challenge as evaluated if the video is missing."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE responses
                 SET evaluated = TRUE, evaluated_at = ?
                 WHERE challenge_id = ?
             """, (datetime.utcnow(), challenge_id))
-    
+
             conn.commit()
             logger.info(f" All responses for challenge {challenge_id} marked as evaluated (skipped due to 404).")
-    
+
         except Exception as e:
-            conn.rollback()  # 
+            conn.rollback()  #
             logger.error(f" Error updating responses for challenge {challenge_id}: {str(e)}")
-    
+
         finally:
             cursor.close()
-            conn.close() 
-
-
-    
+            conn.close()
