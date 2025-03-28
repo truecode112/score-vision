@@ -571,7 +571,7 @@ def summarize_scores(results):
     
     return {'inlier_ratio': inlier_ranges, 'avg_reprojection_error': error_ranges}
 
-def calculate_final_score(keypoint_score, player_score, keypoint_stability, homography_stability, player_plausibility):
+def calculate_final_score_keypoints(keypoint_score, player_score, keypoint_stability, homography_stability, player_plausibility):
     # Weight the different components
     weights = {
         'keypoint_score': 0.3,
