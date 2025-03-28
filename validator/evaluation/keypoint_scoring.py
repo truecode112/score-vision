@@ -467,8 +467,14 @@ def calculate_keypoint_score(inlier_ratio, avg_reprojection_error):
     return (inlier_score + reprojection_score) / 2
 
 def process_input_file(input_file, video_width, video_height):
-    with open(input_file, 'r') as f:
-        data = json.load(f)
+    if isinstance(input_file, str): 
+        with open(input_file, 'r') as f:
+            data = json.load(f)
+    elif isinstance(input_file, dict):  # Already JSON data
+        if "frames" not in input_file:
+            data = {"frames": input_file}
+        else:
+            data = input_file
     
     # Convert list format to dictionary format if needed
     frames_data = data['frames']
