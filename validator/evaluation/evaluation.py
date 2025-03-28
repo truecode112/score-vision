@@ -21,7 +21,7 @@ from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
 from validator.evaluation.bbox_clip import evaluate_frame
-from validator.evaluation.keypoint_scoring import process_input_file
+from validator.evaluation.keypoint_scoring import (process_input_file, calculate_final_score_keypoints)
 
 FRAME_TIMEOUT = 180.0  # seconds
 
@@ -147,7 +147,7 @@ class GSRValidator:
                 avg_player_plausibility
             ) = process_input_file(frames, video_width, video_height)
     
-            final_score = calculate_final_score(
+            final_score = calculate_final_score_keypoints(
                 avg_keypoint_score,
                 player_score,
                 avg_keypoint_stability,
