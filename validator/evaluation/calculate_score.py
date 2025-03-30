@@ -43,7 +43,14 @@ async def calculate_score(
             processing_time = result['processing_time']
             
             # Calculate quality score
-            quality_score = result['validation_result'].score
+            bbox_score = result['validation_result'].score
+            keypoints_final_score = 0.0
+            feedback = result['validation_result'].feedback
+            if isinstance(feedback, dict) and "keypoints_final_score" in feedback:
+                keypoints_final_score = feedback["keypoints_final_score"]
+            
+            logger.info(f"bbox_score: {bbox_score}, keypoints_final_score: {keypoints_final_score}")
+            quality_score=(bbox_score+keypoints_final_score)/2
             
             # Calculate speed score
             speed_score = calculate_speed_score(processing_time, min_time, max_time)
