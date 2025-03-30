@@ -34,163 +34,6 @@ WORKER_TIMEOUT = 300  # 5 minutes timeout for worker tasks
 
 logger = get_logger(__name__)
 
-@dataclass
-class EvaluationTask:
-    """Represents a single evaluation task for a response."""
-    response: GSRResponse
-    challenge: Dict[str, Any]
-    video_path: Path
-    frames: List[int]
-    frame_cache: Dict
-    retry_count: int = 0
-
-class EvaluationQueue:
-    """Manages batched evaluation tasks with multiple workers."""
-    
-    def __init__(self, validator):
-        self.validator = validator
-        self.queue = asyncio.Queue()
-        self.results = {}
-        self.active_tasks: Set[asyncio.Task] = set()
-        self.frame_cache = {}
-        self.processing = False
-        
-    async def add_task(self, task: EvaluationTask):
-        """Add a new evaluation task to the queue."""
-        await self.queue.put(task)
-        
-    async def worker(self, worker_id: int):
-        """Worker coroutine that processes evaluation tasks."""
-        logger.info(f"Starting worker {worker_id}")
-        
-        while self.processing:
-            try:
-                # Get next task
-                task = await self.queue.get()
-                
-                # Process frames in batches
-                for i in range(0, len(task.frames), BATCH_SIZE):
-                    batch_frames = task.frames[i:i + BATCH_SIZE]
-                    try:
-                        # Process batch with timeout
-                        batch_results = await asyncio.wait_for(
-                            self._process_batch(task, batch_frames),
-                            timeout=WORKER_TIMEOUT
-                        )
-                        
-                        # Store results
-                        response_id = task.response.response_id
-                        if response_id not in self.results:
-                            self.results[response_id] = []
-                        self.results[response_id].extend(batch_results)
-                        
-                    except asyncio.TimeoutError:
-                        logger.error(f"Batch timeout for frames {batch_frames}")
-                        if task.retry_count < MAX_RETRIES:
-                            # Requeue failed batch
-                            retry_task = EvaluationTask(
-                                response=task.response,
-                                challenge=task.challenge,
-                                video_path=task.video_path,
-                                frames=batch_frames,
-                                frame_cache=task.frame_cache,
-                                retry_count=task.retry_count + 1
-                            )
-                            await self.queue.put(retry_task)
-                    except Exception as e:
-                        logger.error(f"Batch error: {str(e)}")
-                
-                self.queue.task_done()
-                
-            except Exception as e:
-                logger.error(f"Worker {worker_id} error: {str(e)}")
-                await asyncio.sleep(1)
-                
-    async def _process_batch(self, task: EvaluationTask, batch_frames: List[int]) -> List[dict]:
-        """Process a batch of frames for a task."""
-        results = []
-        
-        # Pre-fetch reference counts for batch if needed
-        frames_to_process = []
-        for frame_idx in batch_frames:
-            if frame_idx not in self.validator.frame_reference_counts:
-                if frame_idx in task.frame_cache:
-                    frame_data = task.frame_cache[frame_idx]
-                    frames_to_process.append({
-                        'encoded_image': self.validator.encode_image(frame_data['frame']),
-                        'frame_id': frame_idx
-                    })
-                    
-        video_width = 1280
-        video_height = 720
-        scoring_result = await self.validator.validate_keypoints(task.response.frames, video_width, video_height)
-        per_frame_scores = scoring_result["per_frame_scores"]
-        
-        # Process each frame in the batch
-        for frame_idx in batch_frames:
-            try:
-                frame = task.frame_cache[frame_idx]['frame']
-                frame_data = task.response.frames.get(str(frame_idx), {})
-                
-                score = await self.validator.validate_bbox_clip(
-                    frame_idx=frame_idx,
-                    frame=frame,
-                    detections=frame_data
-                )
-                keypoint_score = per_frame_scores.get(str(frame_idx), {}).get("keypoint_score", 0.0)
-                final_score = (score + keypoint_score) / 2
-                result = {
-                    "frame_id": frame_idx,
-                    "frame_score": final_score,
-                    "scores": {
-                        "bbox_score": score,
-                        "keypoint_score": keypoint_score,
-                        "final_score": final_score
-                    }
-                }                
-                results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Frame processing error: {str(e)}")
-                
-        return results
-        
-    async def start_processing(self):
-        """Start worker tasks."""
-        self.processing = True
-        for i in range(MAX_WORKERS):
-            task = asyncio.create_task(self.worker(i))
-            self.active_tasks.add(task)
-            task.add_done_callback(self.active_tasks.remove)
-            
-    async def stop_processing(self):
-        """Stop all workers and clean up."""
-        logger.info("Stopping evaluation queue processing...")
-        self.processing = False
-        
-        if self.active_tasks:
-            try:
-                # Wait for tasks with a timeout
-                done, pending = await asyncio.wait(
-                    self.active_tasks,
-                    timeout=30  # 30 second timeout
-                )
-                
-                # Cancel any pending tasks
-                for task in pending:
-                    logger.warning("Cancelling pending worker task that didn't complete in time")
-                    task.cancel()
-                    
-                # Wait briefly for cancelled tasks
-                if pending:
-                    await asyncio.wait(pending, timeout=5)
-                    
-            except Exception as e:
-                logger.error(f"Error during worker cleanup: {str(e)}")
-            finally:
-                self.active_tasks.clear()
-                logger.info("Evaluation queue cleanup completed")
-
 async def _evaluate_single_response(
     validator: GSRValidator,
     db_manager: DatabaseManager,
@@ -278,10 +121,7 @@ async def evaluate_pending_responses(
     """Evaluate all pending responses for a challenge using the worker pool."""
     eval_queue = None
     try:
-        # Initialize evaluation queue
-        eval_queue = EvaluationQueue(validator)
-        await eval_queue.start_processing()
-        
+
         # Get video path
         video_path = await validator.download_video(challenge['video_url'])
         if video_path is None:
@@ -312,7 +152,7 @@ async def evaluate_pending_responses(
             if score == 1:
                 frames.append(idx)
         video_cap.release()
-        
+        logger.info(f'Chose {len(frames)} for evaluation')
         # Pre-load frames into cache
         frame_cache = {}
         for frame_idx in frames:
@@ -325,89 +165,39 @@ async def evaluate_pending_responses(
                     frame_cache[frame_idx] = {'frame': frame}
 
         # Create and queue tasks for each response
-        for response in responses:
-            task = EvaluationTask(
-                response=response,
-                challenge=challenge,
-                video_path=video_path,
-                frames=frames,
-                frame_cache=frame_cache
-            )
-            await eval_queue.add_task(task)
-            logger.info(f"Queued task for response {response.response_id}")
-
-        # Wait for all tasks to complete
-        await eval_queue.queue.join()
-        
-        # Process results
         evaluation_results = []
+
         for response in responses:
-            results = eval_queue.results.get(response.response_id, [])
-            logger.info(f"Processing results for response {response.response_id}")
-            
-            if results:
-                # Calculate final scores
-                frame_scores = {}
-                total_score = 0.0
-                frame_details = []
-                
-                for result in results:
-                    # Extract frame number from debug frame path
-                    frame_path = result.get("debug_frame_path", "")
-                    frame_num = None
-                    if frame_path:
-                        try:
-                            frame_num = int(frame_path.split("frame_")[1].split("_")[0])
-                        except:
-                            logger.error(f"Could not extract frame number from {frame_path}")
-                    
-                    if frame_num is not None:
-                        frame_score = result["scores"]["final_score"]
-                        frame_scores[frame_num] = frame_score
-                        total_score += frame_score
-                        
-                        # Only store essential frame details
-                        frame_details.append({
-                            "frame_number": frame_num,
-                            "keypoint_score": result["scores"]["keypoint_score"],
-                            "bbox_score": result["scores"]["bbox_score"],
-                            "final_score": frame_score,
-                            "debug_frame_path": frame_path,
-                            "num_objects": len(result.get("objects", [])),
-                            "num_keypoints": len(result.get("keypoints", {}).get("points", []))
-                        })
-                        logger.info(f"Frame {frame_num} score: {frame_score:.3f}")
-                
-                avg_score = total_score / len(results) if results else 0.0
-                logger.info(f"Average score for response {response.response_id}: {avg_score:.3f}")
-                
-                # Get timing information
-                started_at = db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], response.miner_hotkey)
-                
-                # Create evaluation result with simplified data
+            logger.info(f"Processing response {response.response_id}")
+
+            result = await validator.evaluate_response(
+                response=response,
+                challenge=GSRChallenge(
+                    challenge_id=challenge["challenge_id"],
+                    type=ChallengeType.GSR,
+                    created_at=challenge["created_at"],
+                    video_url=challenge["video_url"]
+                ),
+                video_path=video_path,
+                frame_cache=frame_cache,
+                frames_to_validate=frames
+            )
+            if result:
+                started_at=db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], response.miner_hotkey)
                 evaluation_results.append({
-                    "challenge_id": challenge['challenge_id'],
+                    "challenge_id": challenge["challenge_id"],
                     "miner_hotkey": response.miner_hotkey,
                     "node_id": response.node_id,
                     "response_id": response.response_id,
-                    "score": avg_score,
+                    "score": result.score,
                     "processing_time": response.processing_time,
-                    "validation_result": ValidationResult(
-                        score=avg_score,
-                        frame_scores=frame_scores,
-                        feedback=frame_details
-                    ),
+                    "validation_result": result,
                     "task_returned_data": response.frames,
                     "started_at": started_at,
-                    "completed_at": None,  # Will be set by calculate_score
-                    "received_at": None  # Will be set by calculate_score
+                    "completed_at": None,
+                    "received_at": None
                 })
-                
-                logger.info(
-                    f"Processed response {response.response_id} "
-                    f"(score: {avg_score:.3f}, frames: {len(frame_scores)})"
-                )
-            else:
+            else: 
                 logger.error(f"No results for response {response.response_id}")
 
         # Calculate final scores and update DB/API
