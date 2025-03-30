@@ -269,16 +269,10 @@ async def evaluate_pending_responses(
             logger.info(f"Completed processing all {len(scores)} responses for challenge {challenge['challenge_id']}")
 
         # Cleanup
-        logger.info("Starting evaluation queue cleanup...")
-        await eval_queue.stop_processing()
-        logger.info("Evaluation queue cleanup completed, continuing with next iteration...")
+        logger.info("Continuing with next iteration...")
 
     except Exception as e:
         logger.error(f"Error in evaluate_pending_responses: {str(e)}")
-        if eval_queue:
-            logger.info("Cleaning up evaluation queue after error...")
-            await eval_queue.stop_processing()
-            logger.info("Cleanup completed after error")
 
 async def run_evaluation_loop(
     db_path: str,
