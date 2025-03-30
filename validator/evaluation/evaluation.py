@@ -20,7 +20,7 @@ from validator.challenge.challenge_types import (
 from validator.config import FRAMES_TO_VALIDATE
 from validator.evaluation.prompts import VALIDATION_PROMPT
 from validator.utils.vlm_api import VLMProcessor
-from validator.evaluation.bbox_clip import evaluate_frame
+from validator.evaluation.bbox_clip import (evaluate_frame, evaluate_bboxes)
 from validator.evaluation.keypoint_scoring import (process_input_file, calculate_final_score_keypoints)
 
 FRAME_TIMEOUT = 180.0  # seconds
@@ -193,26 +193,15 @@ class GSRValidator:
         frame_cache: Dict = None,
         frames_to_validate: List[int] = None
     ) -> ValidationResult:
-        """
-        Main entry to evaluate a GSR response.
-        """
         if not getattr(response, 'response_id', None):
             raise ValueError("response_id is required")
-        
-        node_id = getattr(response, 'node_id', None)
-        if node_id is None:
+        if not getattr(response, 'node_id', None):
             raise ValueError("node_id is required")
 
-        # Use provided frames or select new ones
-        if frames_to_validate is None:
-            frames_to_validate = self.select_random_frames(video_path)
-        #logger.info(f"Evaluating frames: {frames_to_validate}")
-
-        # Pre-fetch reference counts for all frames
         if frame_cache is None:
             frame_cache = {}
-            
-        frames_to_process = []
+
+        # Précharger les frames
         for frame_idx in frames_to_validate:
             if frame_idx not in frame_cache:
                 cap = cv2.VideoCapture(str(video_path))
@@ -221,109 +210,34 @@ class GSRValidator:
                 cap.release()
                 if ret:
                     frame_cache[frame_idx] = {'frame': frame}
-                    frames_to_process.append({
-                        'encoded_image': self.encode_image(frame),
-                        'frame_id': frame_idx
-                    })
 
-
-        tasks = []
-        for frame_idx in frames_to_validate:
-            try:
-                frame = frame_cache[frame_idx]['frame']
-                frame_data = response.frames.get(str(frame_idx), {})
-                
-                tasks.append((frame_idx, asyncio.create_task(
-                    self.validate_frame_detections(
-                        frame=frame,
-                        detections=frame_data,
-                        frame_idx=frame_idx,
-                        challenge_id=challenge.challenge_id,
-                        node_id=response.node_id,
-                        response_id=response.response_id
-                    )
-                )))
-            except Exception as e:
-                logger.error(f"Error preparing frame {frame_idx}: {str(e)}")
+        # Analyse keypoints (globale)
+        scoring_result = await self.validate_keypoints(response.frames, 1280, 720)
+        per_frame_keypoints = scoring_result.get("per_frame_scores", {})
+        keypoints_final_score = scoring_result.get("final_score", 0.0)/100
 
         frame_evals = []
-        for frame_idx, task in tasks:
-            try:
-                data = await task
-                data["frame_number"] = frame_idx
-                frame_evals.append(data)
-                # Store in DB
-                if self.db_manager:
-                    scores = data["scores"]
-                    feed = {
-                        "scores": {
-                            "keypoint_score": scores["keypoint_score"],
-                            "bbox_score": scores["bbox_score"]
-                        },
-                        "scoring_details": data["scoring_details"]
-                    }
-                    self.db_manager.store_frame_evaluation(
-                        response_id=response.response_id,
-                        challenge_id=challenge.challenge_id,
-                        miner_hotkey=response.miner_hotkey,
-                        node_id=response.node_id,
-                        frame_id=frame_idx,
-                        frame_timestamp=frame_idx / 30.0,  # assume 30fps
-                        frame_score=scores["final_score"],
-                        raw_frame_path="",
-                        annotated_frame_path=data["debug_frame_path"],
-                        feedback=json.dumps(feed)
-                    )
-            except Exception as e:
-                logger.error(f"Error evaluating frame {frame_idx}: {str(e)}")
-
-        if not frame_evals:
-            return ValidationResult(
-                score=0.0,
-                frame_scores={},
-                feedback="No frames evaluated successfully."
-            )
-
-        # Gather results
-        total_scores, frame_scores, details = [], {}, []
-        for item in frame_evals:
-            try:
-                frm_num = item["frame_number"]
-                final_score = item["scores"]["final_score"]
-                total_scores.append(final_score)
-                frame_scores[frm_num] = final_score
-                
-                # Extract scoring details safely
-                frame_detail = {
-                    "frame_number": frm_num,
-                    "debug_frame_path": item.get("debug_frame_path", ""),
-                    "scores": item.get("scores", {}),
-                }
-                
-                # Only add scoring_details if it exists
-                if "scoring_details" in item:
-                    frame_detail["scoring_details"] = item["scoring_details"]
-                    
-                details.append(frame_detail)
-            except Exception as e:
-                logger.error(f"Error processing frame evaluation result for frame {frm_num}: {str(e)}")
-                continue
-
-        avg_score = sum(total_scores) / len(total_scores) if total_scores else 0.0
-        summary = {
-            "node_id": response.node_id,
-            "challenge_id": challenge.challenge_id,
-            "average_score": avg_score,
-            "frame_count": len(frame_evals),
-            "frame_details": details
-        }
-        #logger.info(f"Validation Results:\n{json.dumps(summary, indent=2)}")
-
-        return ValidationResult(
-            score=avg_score,
-            frame_scores=frame_scores,
-            feedback=details
+        total_bbox_score = 0.0
+        frame_scores = {}
+        frame_details = []
+        
+        logger.info('Starting to evaluate frames')
+        avg_bbox_score = await evaluate_bboxes(
+            prediction=response.frames,
+            path_video=video_path,
+            n_frames=len(frames_to_validate)
         )
+
+        logger.info(f'avg bbox score : {avg_bbox_score}')
+        return ValidationResult(
+            score=avg_bbox_score,
+            frame_scores=frame_scores,
+            feedback={
+                "frame_details": frame_details,
+                "keypoints_final_score": keypoints_final_score
+            }
+        )
+
 
     def calculate_bbox_confidence_score(self, results: dict) -> float:
         """
