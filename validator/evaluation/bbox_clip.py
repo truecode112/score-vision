@@ -229,11 +229,8 @@ def evaluate_frame(
     return scaled_score
 
 
-async def evaluate_bboxes(path_predictions:Path, path_video:Path, n_frames:int) -> float:
-    logger.info(f"Loading Model Predictions: {path_predictions}")
-    with path_predictions.open() as file:
-        data = load(file)
-    frames = data['frames']
+async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int) -> float:
+    frames = prediction['frames']
 
     if isinstance(frames, list):
         logger.warning("Legacy formatting detected. Updating...")
@@ -270,16 +267,19 @@ async def evaluate_bboxes(path_predictions:Path, path_video:Path, n_frames:int) 
     with ThreadPoolExecutor(max_workers=n_threads) as executor:
         futures = []
         async for frame_id,image in stream_frames(video_path=path_video):
-            if frame_id not in frame_ids_to_evaluate:
+            if str(frame_id) not in frame_ids_to_evaluate:
                 continue
             futures.append(
                 executor.submit(
-                    evaluate_frame,frame_id,image,frames[frame_id]['objects']
+                    evaluate_frame,frame_id,image,frames[str(frame_id)]['objects']
                 )
             )
     for future in as_completed(futures):
-        score = future.result()
-        scores.append(score)
+        try: 
+            score = future.result()
+            scores.append(score)
+        except Exception as e:
+            print(f"Error while getting score from future: {e}")
 
     average_score = sum(scores)/len(scores) if any(scores) else 0.0
     logger.info(f"Average Score: {average_score:.2f} when evaluated on {len(scores)} frames")
