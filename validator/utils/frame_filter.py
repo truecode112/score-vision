@@ -4,12 +4,12 @@ from PIL import Image
 import cv2
 import numpy as np
 
-def clip_verification(image_path, threshold=0.25):
+def clip_verification(image_path, threshold=0.60):
     model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
     tokenizer = open_clip.get_tokenizer('ViT-B-32')
 
     image = preprocess(Image.open(image_path)).unsqueeze(0)
-    texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd", "a training ground", "a grass field"]
+    texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd", "a grass field"]
 
     with torch.no_grad():
         image_features = model.encode_image(image)
@@ -24,24 +24,6 @@ def clip_verification(image_path, threshold=0.25):
 
     return texts[top_label] == "a football pitch" and top_prob.item() > threshold
 
-def is_close_plan(mask_green, threshold=0.8, band_ratio=0.025):
-    h, w = mask_green.shape
-    band_h = int(h * band_ratio)
-    band_w = int(w * band_ratio)
-
-    top = mask_green[:band_h, :]
-    bottom = mask_green[-band_h:, :]
-    left = mask_green[:, :band_w]
-    right = mask_green[:, -band_w:]
-
-    green_ratios = [
-        np.sum(top > 0) / top.size,
-        np.sum(bottom > 0) / bottom.size,
-        np.sum(left > 0) / left.size,
-        np.sum(right > 0) / right.size
-    ]
-
-    return all(ratio > threshold for ratio in green_ratios)
 
 def detect_goal_net_by_lines(lines):
     if lines is None or len(lines) < 15:
@@ -78,7 +60,7 @@ def detect_pitch(image_path):
         raise ValueError("Could not load image")
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([35, 60, 60])
+    lower_green = np.array([35, 40, 40])
     upper_green = np.array([85, 255, 255])
     mask_green = cv2.inRange(hsv, lower_green, upper_green)
 
@@ -113,10 +95,8 @@ def detect_pitch(image_path):
     score = 0.3 * green_ratio + 0.7 * (total_line_length / 4500)
     score = min(1, score)
 
-    if is_close_plan(mask_green, threshold=0.7):
-        return 0
 
-    if 0.8 <= score < 1.0:
+    if 0.8 <= score <= 1.0:
         is_pitch = clip_verification(image_path)
         return 1 if is_pitch else 0
 
