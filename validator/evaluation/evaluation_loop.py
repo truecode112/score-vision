@@ -152,7 +152,11 @@ async def evaluate_pending_responses(
             if score == 1:
                 frames.append(idx)
         video_cap.release()
-        logger.info(f'Chose {len(frames)} for evaluation')
+        if len(frames)<75:
+            logger.info(f"Skipping challenge {challenge['challenge_id']} having not enough valid frames ({len(frames)})")
+            db_manager.mark_responses_failed(challenge['challenge_id'])
+            return
+        logger.info(f'Accepting challenge with {len(frames)} valid frames for evaluation')
         # Pre-load frames into cache
         frame_cache = {}
         for frame_idx in frames:
