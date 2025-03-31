@@ -210,9 +210,11 @@ class GSRValidator:
                 cap.release()
                 if ret:
                     frame_cache[frame_idx] = {'frame': frame}
-
+        filtered_frames = {
+            str(k): v for k, v in response.frames.items() if int(k) in frames_to_validate
+        }
         # Analyse keypoints (globale)
-        scoring_result = await self.validate_keypoints(response.frames, 1280, 720)
+        scoring_result = await self.validate_keypoints(filtered_frames, 1280, 720)
         per_frame_keypoints = scoring_result.get("per_frame_scores", {})
         keypoints_final_score = scoring_result.get("final_score", 0.0)/100
 
@@ -225,7 +227,8 @@ class GSRValidator:
         avg_bbox_score = await evaluate_bboxes(
             prediction=response.frames,
             path_video=video_path,
-            n_frames=len(frames_to_validate)
+            n_frames=750,
+            n_valid=len(frames_to_validate)
         )
 
         logger.info(f'avg bbox score : {avg_bbox_score}')
