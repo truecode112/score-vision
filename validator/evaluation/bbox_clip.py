@@ -229,8 +229,8 @@ def evaluate_frame(
     return scaled_score
 
 
-async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int) -> float:
-    frames = prediction['frames']
+async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_valid:int) -> float:
+    frames = prediction
 
     if isinstance(frames, list):
         logger.warning("Legacy formatting detected. Updating...")
@@ -247,6 +247,11 @@ async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int) -> flo
         frames_ids_which_can_be_validated,
         k=min(n_frames,len(frames_ids_which_can_be_validated))
     )
+
+    if len(frame_ids_to_evaluate)/n_valid<0.3:
+        logger.waning(f"Only having {len(frame_ids_to_evaluate)} which is not enough for the threshold")
+        return 0.0
+        
     if not any(frame_ids_to_evaluate):
         logger.warning("""
             We are currently unable to validate frames with no bboxes predictions
