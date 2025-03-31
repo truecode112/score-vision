@@ -96,7 +96,7 @@ def detect_pitch(image_path):
     score = min(1, score)
 
 
-    if 0.8 <= score <= 1.0:
+    if 0.8 <= score < 1.0:
         is_pitch = clip_verification(image_path)
         return 1 if is_pitch else 0
 
