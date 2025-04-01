@@ -18,8 +18,7 @@ from loguru import logger
 import cv2
 import tempfile
 from dataclasses import dataclass
-from validator.utils.frame_filter import detect_pitch
-
+from validator.utils.frame_filter import (detect_pitch, batch_clip_verification)
 
 # New constant for minimum number of players
 MIN_PLAYERS_PER_FRAME = 4
@@ -139,8 +138,9 @@ async def evaluate_pending_responses(
             return
 
         # Select frames for this challenge
+        frame_paths = []
+        frame_indices = []
         video_cap = cv2.VideoCapture(str(video_path))
-        frames = []
         for idx in range(int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))):
             video_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             success, frame = video_cap.read()
@@ -148,10 +148,19 @@ async def evaluate_pending_responses(
                 continue
             tmp_path = Path(tempfile.gettempdir()) / f"frame_{challenge['challenge_id']}_{idx}.jpg"
             cv2.imwrite(str(tmp_path), frame)
-            score = detect_pitch(str(tmp_path))
+            frame_paths.append(str(tmp_path))
+            frame_indices.append(idx)
+
+
+        clip_scores = batch_clip_verification(frame_paths)
+
+        frames = []
+        for i, path in enumerate(frame_paths):
+            score = detect_pitch(path, clip_scores=clip_scores)
             if score == 1:
-                frames.append(idx)
+                frames.append(frame_indices[i])
         video_cap.release()
+        
         if len(frames)<75:
             logger.info(f"Skipping challenge {challenge['challenge_id']} having not enough valid frames ({len(frames)})")
             db_manager.mark_responses_failed(challenge['challenge_id'])
