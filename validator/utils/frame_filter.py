@@ -4,26 +4,78 @@ from PIL import Image
 import cv2
 import numpy as np
 
-def clip_verification(image_path, threshold=0.60):
-    model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
-    tokenizer = open_clip.get_tokenizer('ViT-B-32')
+clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
+clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
 
-    image = preprocess(Image.open(image_path)).unsqueeze(0)
-    texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd", "a grass field"]
+# Forcer le CPU
+device = torch.device("cpu")
+clip_model.to(device)
+clip_model.eval()
+
+# Préparer les textes à comparer
+texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd", "a grass field"]
+with torch.no_grad():
+    text_tokens = clip_tokenizer(texts).to(device)
+    text_features = clip_model.encode_text(text_tokens)
+    text_features /= text_features.norm(dim=-1, keepdim=True)
+
+def batch_clip_verification(image_paths, threshold=0.7):
+    image_features_list = []
+    valid_paths = []
+
+    for path in image_paths:
+        try:
+            image = clip_preprocess(Image.open(path)).unsqueeze(0)
+            image_features_list.append(image)
+            valid_paths.append(path)
+        except:
+            continue
+
+    if not image_features_list:
+        return {}
+
+    batch = torch.cat(image_features_list).to(device)
 
     with torch.no_grad():
-        image_features = model.encode_image(image)
-        text_tokens = tokenizer(texts)
-        text_features = model.encode_text(text_tokens)
-
+        image_features = clip_model.encode_image(batch)
         image_features /= image_features.norm(dim=-1, keepdim=True)
-        text_features /= text_features.norm(dim=-1, keepdim=True)
-
         similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
-        top_prob, top_label = similarity[0].max(0)
 
-    return texts[top_label] == "a football pitch" and top_prob.item() > threshold
+    clip_scores = {}
+    for i, path in enumerate(valid_paths):
+        top_prob, top_label = similarity[i].max(0)
+        if texts[top_label] == "a football pitch":
+            clip_scores[path] = top_prob.item()
+        else:
+            clip_scores[path] = 0.0
 
+    return clip_scores
+
+def is_close_plan(mask_green, threshold=0.8, band_ratio=0.025):
+    """
+    Detects if the image is a close-up based on green coverage on image borders.
+    """
+    h, w = mask_green.shape
+    band_h = int(h * band_ratio)
+    band_w = int(w * band_ratio)
+
+    # Extract borders
+    top = mask_green[:band_h, :]
+    bottom = mask_green[-band_h:, :]
+    left = mask_green[:, :band_w]
+    right = mask_green[:, -band_w:]
+
+    # Compute green ratios
+    green_ratios = [
+        np.sum(top > 0) / top.size,
+        np.sum(bottom > 0) / bottom.size,
+        np.sum(left > 0) / left.size,
+        np.sum(right > 0) / right.size
+    ]
+
+    if all(ratio > threshold for ratio in green_ratios):
+        return True
+    return False
 
 def detect_goal_net_by_lines(lines):
     if lines is None or len(lines) < 15:
@@ -54,7 +106,7 @@ def detect_goal_net_by_lines(lines):
 
     return (is_grid and is_short_lines) or (is_grid and is_uniform_length)
 
-def detect_pitch(image_path):
+def detect_pitch(image_path, clip_scores=None):
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError("Could not load image")
@@ -95,9 +147,11 @@ def detect_pitch(image_path):
     score = 0.3 * green_ratio + 0.7 * (total_line_length / 4500)
     score = min(1, score)
 
+    if is_close_plan(mask_green, threshold=0.7):
+        score -= 0.29
 
-    if 0.8 <= score < 1.0:
-        is_pitch = clip_verification(image_path)
-        return 1 if is_pitch else 0
+    if 0.7 <= score <= 1.0 and clip_scores is not None:
+        clip_score = clip_scores.get(image_path, 0.0)
+        return 1 if clip_score > 0.65 else 0
 
-    return score
+    return max(score, 0.0)
