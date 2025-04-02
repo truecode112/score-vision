@@ -166,52 +166,45 @@ async def evaluate_pending_responses(
             db_manager.mark_responses_failed(challenge['challenge_id'])
             return
         logger.info(f'Accepting challenge with {len(frames)} valid frames for evaluation')
-        # Pre-load frames into cache
-        frame_cache = {}
-        for frame_idx in frames:
-            if frame_idx not in frame_cache:
-                cap = cv2.VideoCapture(str(video_path))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                cap.release()
-                if ret:
-                    frame_cache[frame_idx] = {'frame': frame}
 
         # Create and queue tasks for each response
         evaluation_results = []
 
         for response in responses:
             logger.info(f"Processing response {response.response_id}")
-
-            result = await validator.evaluate_response(
-                response=response,
-                challenge=GSRChallenge(
-                    challenge_id=challenge["challenge_id"],
-                    type=ChallengeType.GSR,
-                    created_at=challenge.get("created_at"),
-                    video_url=challenge["video_url"]
-                ),
-                video_path=video_path,
-                frame_cache=frame_cache,
-                frames_to_validate=frames
-            )
-            if result:
-                started_at=db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], response.miner_hotkey)
-                evaluation_results.append({
-                    "challenge_id": challenge["challenge_id"],
-                    "miner_hotkey": response.miner_hotkey,
-                    "node_id": response.node_id,
-                    "response_id": response.response_id,
-                    "score": result.score,
-                    "processing_time": response.processing_time,
-                    "validation_result": result,
-                    "task_returned_data": response.frames,
-                    "started_at": started_at,
-                    "completed_at": None,
-                    "received_at": None
-                })
-            else: 
-                logger.error(f"No results for response {response.response_id}")
+            try:
+                result = await validator.evaluate_response(
+                    response=response,
+                    challenge=GSRChallenge(
+                        challenge_id=challenge["challenge_id"],
+                        type=ChallengeType.GSR,
+                        created_at=challenge.get("created_at"),
+                        video_url=challenge["video_url"]
+                    ),
+                    video_path=video_path,
+                    frames_to_validate=frames
+                )
+                if result:
+                    started_at=db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], response.miner_hotkey)
+                    evaluation_results.append({
+                        "challenge_id": challenge["challenge_id"],
+                        "miner_hotkey": response.miner_hotkey,
+                        "node_id": response.node_id,
+                        "response_id": response.response_id,
+                        "score": result.score,
+                        "processing_time": response.processing_time,
+                        "validation_result": result,
+                        "task_returned_data": response.frames,
+                        "started_at": started_at,
+                        "completed_at": None,
+                        "received_at": None
+                    })
+                else: 
+                    logger.error(f"No results for response {response.response_id}")
+                    
+            except Exception as e:
+                logger.error(f'Error processing response {response.response_id}')
+                continue
 
         # Calculate final scores and update DB/API
         async with httpx.AsyncClient() as client:
