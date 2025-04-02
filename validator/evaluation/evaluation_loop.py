@@ -188,7 +188,7 @@ async def evaluate_pending_responses(
                 challenge=GSRChallenge(
                     challenge_id=challenge["challenge_id"],
                     type=ChallengeType.GSR,
-                    created_at=challenge["created_at"],
+                    created_at=challenge.get("created_at"),
                     video_url=challenge["video_url"]
                 ),
                 video_path=video_path,
