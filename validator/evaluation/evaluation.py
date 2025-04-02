@@ -190,26 +190,9 @@ class GSRValidator:
         response: GSRResponse,
         challenge: GSRChallenge,
         video_path: Path,
-        frame_cache: Dict = None,
         frames_to_validate: List[int] = None
     ) -> ValidationResult:
-        if not getattr(response, 'response_id', None):
-            raise ValueError("response_id is required")
-        if not getattr(response, 'node_id', None):
-            raise ValueError("node_id is required")
 
-        if frame_cache is None:
-            frame_cache = {}
-
-        # Précharger les frames
-        for frame_idx in frames_to_validate:
-            if frame_idx not in frame_cache:
-                cap = cv2.VideoCapture(str(video_path))
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                cap.release()
-                if ret:
-                    frame_cache[frame_idx] = {'frame': frame}
         filtered_frames = {
             str(k): v for k, v in response.frames.items() if int(k) in frames_to_validate
         }
