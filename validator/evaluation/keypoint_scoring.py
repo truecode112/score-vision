@@ -470,23 +470,25 @@ def process_input_file(input_file, video_width, video_height):
     if isinstance(input_file, str): 
         with open(input_file, 'r') as f:
             data = json.load(f)
+            
     elif isinstance(input_file, dict):  # Already JSON data
         if "frames" not in input_file:
             data = {"frames": input_file}
         else:
             data = input_file
-    
-    # Convert list format to dictionary format if needed
-    frames_data = data['frames']
-    if isinstance(frames_data, list):
+            
+    elif isinstance(input_file, list):
         frames_dict = {}
-        for i, frame_data in enumerate(frames_data):
+        for i, frame_data in enumerate(input_file):
             if frame_data:
                 # Use frame_number if available, otherwise use index
                 frame_id = str(frame_data.get('frame_number', i))
                 frames_dict[frame_id] = frame_data
-        data['frames'] = frames_dict
-    
+        frames_data={"frames": frames_dict}
+        
+    # Convert list format to dictionary format if needed
+    frames_data = data['frames']
+
     # Detect scene transitions and segment the video
     transitions, frame_to_segment = detect_scene_transitions(data['frames'])
     print(f"Detected {len(transitions)} scene transitions")
