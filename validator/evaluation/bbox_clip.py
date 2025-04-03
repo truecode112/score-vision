@@ -248,7 +248,7 @@ async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_vali
         k=min(n_frames,len(frames_ids_which_can_be_validated))
     )
 
-    if len(frame_ids_to_evaluate)/n_valid<0.3:
+    if len(frame_ids_to_evaluate)/n_valid<0.7:
         logger.waning(f"Only having {len(frame_ids_to_evaluate)} which is not enough for the threshold")
         return 0.0
         
