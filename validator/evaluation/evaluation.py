@@ -205,13 +205,17 @@ class GSRValidator:
         total_bbox_score = 0.0
         frame_scores = {}
         frame_details = []
+
+        selected_frames_id_bbox = random.sample(frames_to_validate, min(300, len(frames_to_validate)))
         
-        logger.info('Starting to evaluate frames')
+        selected_frames_bbox = {str(i): v for i, v in response.frames.items() if int(i) in selected_frames_id_bbox}
+        
+        logger.info(f'Starting to evaluate {len(selected_frames_id_bbox) frames')
         avg_bbox_score = await evaluate_bboxes(
-            prediction=response.frames,
+            prediction=selected_frames_bbox,
             path_video=video_path,
             n_frames=750,
-            n_valid=len(frames_to_validate)
+            n_valid=len(selected_frames_id_bbox)
         )
 
         logger.info(f'avg bbox score : {avg_bbox_score}')
