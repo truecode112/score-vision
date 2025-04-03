@@ -582,10 +582,10 @@ def summarize_scores(results):
 def calculate_final_score_keypoints(keypoint_score, player_score, keypoint_stability, homography_stability, player_plausibility):
     # Weight the different components
     weights = {
-        'keypoint_score': 0.3,
-        'player_score': 0.2,
-        'keypoint_stability': 0.2,
-        'homography_stability': 0.2,
+        'keypoint_score': 0.6,
+        'player_score': 0.1,
+        'keypoint_stability': 0.1,
+        'homography_stability': 0.1,
         'player_plausibility': 0.1
     }
     
