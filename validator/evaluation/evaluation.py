@@ -210,7 +210,7 @@ class GSRValidator:
         
         selected_frames_bbox = {str(i): v for i, v in response.frames.items() if int(i) in selected_frames_id_bbox}
         
-        logger.info(f'Starting to evaluate {len(selected_frames_id_bbox) frames')
+        logger.info(f'Starting to evaluate {len(selected_frames_id_bbox)} frames')
         avg_bbox_score = await evaluate_bboxes(
             prediction=selected_frames_bbox,
             path_video=video_path,
