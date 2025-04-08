@@ -147,7 +147,7 @@ def detect_pitch(image_path, clip_scores=None):
     score = 0.3 * green_ratio + 0.7 * (total_line_length / 4500)
     score = min(1, score)
 
-    if is_close_plan(mask_green, threshold=0.7):
+    if is_close_plan(mask_green, threshold=0.8):
         score -= 0.29
 
     if 0.7 <= score <= 1.0 and clip_scores is not None:
