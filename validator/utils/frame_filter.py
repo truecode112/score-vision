@@ -13,7 +13,7 @@ clip_model.to(device)
 clip_model.eval()
 
 # Préparer les textes à comparer
-texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd", "a grass field"]
+texts = ["a football pitch", "a close-up of a or a few football players", "a stadium with crowd"]
 with torch.no_grad():
     text_tokens = clip_tokenizer(texts).to(device)
     text_features = clip_model.encode_text(text_tokens)
@@ -152,6 +152,6 @@ def detect_pitch(image_path, clip_scores=None):
 
     if 0.7 <= score <= 1.0 and clip_scores is not None:
         clip_score = clip_scores.get(image_path, 0.0)
-        return 1 if clip_score > 0.65 else 0
+        return 1 if clip_score >= 0.75 else 0
 
     return max(score, 0.0)
