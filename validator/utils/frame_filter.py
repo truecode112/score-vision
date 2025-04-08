@@ -13,7 +13,7 @@ clip_model.to(device)
 clip_model.eval()
 
 # Préparer les textes à comparer
-texts = ["a football pitch", "a close-up of a or a few football players", "a stadium with crowd"]
+texts = ["a football pitch", "a close-up of a football player", "a stadium with crowd"]
 with torch.no_grad():
     text_tokens = clip_tokenizer(texts).to(device)
     text_features = clip_model.encode_text(text_tokens)
