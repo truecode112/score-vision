@@ -206,7 +206,7 @@ class GSRValidator:
         frame_scores = {}
         frame_details = []
 
-        selected_frames_id_bbox = random.sample(frames_to_validate, min(300, len(frames_to_validate)))
+        selected_frames_id_bbox = random.sample(frames_to_validate, min(100, len(frames_to_validate)))
         
         selected_frames_bbox = {str(i): v for i, v in response.frames.items() if int(i) in selected_frames_id_bbox}
         
