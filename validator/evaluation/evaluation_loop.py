@@ -204,6 +204,7 @@ async def evaluate_pending_responses(
                     
             except Exception as e:
                 logger.error(f'Error processing response {response.response_id}')
+                db_manager.mark_response_failed(response.response_id)
                 continue
 
         # Calculate final scores and update DB/API
