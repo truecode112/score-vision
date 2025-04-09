@@ -231,7 +231,12 @@ def evaluate_frame(
 
 async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_valid:int) -> float:
     frames = prediction
-
+    
+    # Skip evaluation if no frames or all frames are empty
+    if not frames or all(not frame.get("objects") for frame in frames.values()):
+        logger.warning("No valid frames with objects found in prediction — skipping evaluation.")
+        return 0.0
+        
     if isinstance(frames, list):
         logger.warning("Legacy formatting detected. Updating...")
         frames = {
