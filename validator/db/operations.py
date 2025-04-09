@@ -1079,3 +1079,27 @@ class DatabaseManager:
         finally:
             cursor.close()
             conn.close()
+
+
+    def mark_response_failed(self, response_id: int) -> None:
+        """Mark a single response as evaluated (used when evaluation failed)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE responses
+                SET evaluated = TRUE, evaluated_at = ?
+                WHERE response_id = ?
+            """, (datetime.utcnow(), response_id))
+
+            conn.commit()
+            logger.info(f"Response {response_id} marked as evaluated (skipped due to error).")
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error marking response {response_id} as failed: {str(e)}")
+
+        finally:
+            cursor.close()
+            conn.close()
