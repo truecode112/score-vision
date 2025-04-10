@@ -30,7 +30,7 @@ ALPHA_SCORING_MULTIPLICATOR = 4
 SCORE_VISION_API = "https://api.scorevision.io"
 #SCORE_VISION_API = "http://localhost:8000"
 
-VERSION_KEY = 2026
+VERSION_KEY = 2027
 
 # OpenAI Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
