@@ -5,7 +5,7 @@ from random import sample
 from enum import Enum
 from asyncio import get_event_loop, run
 from logging import getLogger, basicConfig, INFO, DEBUG
-from math import cos, acos
+from math import cos, acos, exp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from os import cpu_count
 from time import time
@@ -34,6 +34,8 @@ class BoundingBoxObject(Enum):
     BACKGROUND = "background"
     BLANK = "blank"
     OTHER = "other"
+    NOTFOOT="not a football"
+    BLACK="black shape"
 
 OBJECT_ID_TO_ENUM = {
     0:BoundingBoxObject.FOOTBALL,
@@ -98,11 +100,48 @@ predicted: {self.predicted_label.value}
     @property
     def score(self) -> float:
         """
-        1.0 = bbox is correct (e.g. a goalkeeper was captured and identified as a goalkeeper)
-        0.5 = bbox is incorrect but contains a valid object (e.g. a referee was captured but identified as a goalkeeper)
-        -0.5 = bbox is incorrect and contains no objects of interest (e.g. the background was captured and identified as a goalkeeper)
+        New :
+        - GRASS / CROWD / OTHER / BACKGROUND → -1.0
+        - PERSON (player, ref, goalkeeper)
+            - correct → 1.0
+            - wrong classification → 0.5
+            - other → -1.0
+        - FOOTBALL :
+            - correct → 1.0
+            - else → -1.0
         """
-        return float(self.correctness) or (self.validity-0.5)
+        if self.expected_label in {
+            BoundingBoxObject.GRASS,
+            BoundingBoxObject.CROWD,
+            BoundingBoxObject.OTHER,
+            BoundingBoxObject.BACKGROUND,
+        }:
+            return -1.0
+
+        if self.expected_label in {
+            BoundingBoxObject.PLAYER,
+            BoundingBoxObject.GOALKEEPER,
+            BoundingBoxObject.REFEREE,
+        }:
+            if self.predicted_label == self.expected_label:
+                return 1.0
+            elif self.predicted_label in {
+                BoundingBoxObject.PLAYER,
+                BoundingBoxObject.GOALKEEPER,
+                BoundingBoxObject.REFEREE,
+            }:
+                return 0.5
+            else:
+                return -1.0
+
+        if self.expected_label == BoundingBoxObject.FOOTBALL:
+            if self.predicted_label == BoundingBoxObject.FOOTBALL:
+                return 1.0
+            else:
+                return -1.0
+
+        return -1.0
+
 
     @property
     def points(self) -> float:
@@ -123,11 +162,14 @@ async def stream_frames(video_path:Path):
     finally:
         cap.release()
 
+   
+
 def multiplication_factor(image_array:ndarray, bboxes:list[dict[str,int|tuple[int,int,int,int]]]) -> float:
     """Reward more targeted bbox predictions
     while penalising excessively large or numerous bbox predictions
     """
     total_area_bboxes = 0.0
+    valid_bbox_count = 0
     for bbox in bboxes:
         if 'bbox' not in bbox:
             continue
@@ -136,13 +178,28 @@ def multiplication_factor(image_array:ndarray, bboxes:list[dict[str,int|tuple[in
         h = abs(y2-y1)
         a = w*h
         total_area_bboxes += a
+        valid_bbox_count += 1
+    if valid_bbox_count==0:
+        return 1.0
     height,width,_ = image_array.shape
     area_image = height*width
     logger.debug(f"Total BBox Area: {total_area_bboxes:.2f} pxl^2\nImage Area: {area_image:.2f} pxl^2")
 
     percentage_image_area_covered = total_area_bboxes / area_image
-    scaling_factor = cos(acos(0)*max(0.0,min(1.0,percentage_image_area_covered)))
-    logger.info(f"The predicted bboxes cover {percentage_image_area_covered*100:.2f}% of the image so the resulting scaling factor = {scaling_factor:.2f}")
+    avg_percentage_area_per_bbox=percentage_image_area_covered/valid_bbox_count
+
+    if avg_percentage_area_per_bbox <= 0.015:
+        if percentage_image_area_covered <= 0.10:
+            scaling_factor=1
+        else:
+            scaling_factor = exp(-3 * (percentage_image_area_covered - 0.1))
+
+    else:
+        scaling_factor = exp(-100 * (avg_percentage_area_per_bbox - 0.015))
+
+    logger.info(
+        f"Avg area per object: {avg_percentage_area_per_bbox*100:.2f}% of image — scaling factor = {scaling_factor:.4f}"
+    )
     return scaling_factor
 
 def batch_classify_rois(regions_of_interest:list[ndarray]) -> list[BoundingBoxObject]:
@@ -164,69 +221,149 @@ def batch_classify_rois(regions_of_interest:list[ndarray]) -> list[BoundingBoxOb
     ]
 
 def extract_regions_of_interest_from_image(bboxes:list[dict[str,int|tuple[int,int,int,int]]], image_array:ndarray) -> list[ndarray]:
-    bboxes_ = [
-        BBox(
-            x1=int(bbox['bbox'][0]),
-            y1=int(bbox['bbox'][1]),
-            x2=int(bbox['bbox'][2]),
-            y2=int(bbox['bbox'][3])
-        )
-        for bbox in bboxes
-    ]
-    max_height = max(bbox.height for bbox in bboxes_)
-    max_width = max(bbox.width for bbox in bboxes_)
-
     rois = []
-    for bbox in bboxes_:
-        roi = zeros(shape=(max_height,max_width,3),dtype="uint8")
-        roi[:bbox.height,:bbox.width,:] = image_array[bbox.y1:bbox.y2,bbox.x1:bbox.x2,:]
+    for bbox in bboxes:
+        x1 = int(bbox['bbox'][0])
+        y1 = int(bbox['bbox'][1])
+        x2 = int(bbox['bbox'][2])
+        y2 = int(bbox['bbox'][3])
+        roi = image_array[y1:y2, x1:x2, :].copy() 
         rois.append(roi)
-        image_array[bbox.y1:bbox.y2,bbox.x1:bbox.x2,:] = zeros(shape=(bbox.height,bbox.width,3)) #We mask the bbox on the original image to prevent repeat predictions for the same object
+        image_array[y1:y2, x1:x2, :] = 0  
     return rois
+  
 
 def evaluate_frame(
     frame_id:int,
     image_array:ndarray,
     bboxes:list[dict[str,int|tuple[int,int,int,int]]]
 ) -> float:
-    """
-    bboxes = [
-      {"id": int,"class_id": int,"bbox": [x1,y1,x2,y2]},
-      ...
-    ]
-    """
     object_counts = {
-        BoundingBoxObject.FOOTBALL:0,
-        BoundingBoxObject.GOALKEEPER:0,
-        BoundingBoxObject.PLAYER:0,
-        BoundingBoxObject.REFEREE:0,
-        BoundingBoxObject.OTHER:0
+        BoundingBoxObject.FOOTBALL: 0,
+        BoundingBoxObject.GOALKEEPER: 0,
+        BoundingBoxObject.PLAYER: 0,
+        BoundingBoxObject.REFEREE: 0,
+        BoundingBoxObject.OTHER: 0
     }
+
     rois = extract_regions_of_interest_from_image(
         bboxes=bboxes,
-        image_array=image_array[:,:,::-1] #flip colour channels: BGR to RGB
+        image_array=image_array[:,:,::-1] # BGR -> RGB
     )
-    expecteds = batch_classify_rois(regions_of_interest=rois)
-    scores = [
-        BBoxScore(
-            predicted_label=OBJECT_ID_TO_ENUM[bboxes[i]['class_id']],
-            expected_label=expected,
-            occurrence=len([
-                prior_expected for prior_expected in expecteds[:i]
-                if prior_expected==expected
-            ])
-        )
-        for i,expected in enumerate(expecteds)
+
+    predicted_labels = [
+        OBJECT_ID_TO_ENUM.get(bbox["class_id"], BoundingBoxObject.OTHER)
+        for bbox in bboxes
     ]
-    logger.debug('\n'.join(map(str,scores)))
+
+    # Step 1 : "person" vs "grass"
+    step1_inputs = data_processor(
+        text=["person", "grass"],
+        images=rois,
+        return_tensors="pt",
+        padding=True
+    ).to("cpu")
+    with no_grad():
+        step1_outputs = clip_model(**step1_inputs)
+        step1_probs = step1_outputs.logits_per_image.softmax(dim=1)
+
+    expected_labels: list[BoundingBoxObject] = [None] * len(rois)
+    rois_for_person_refine = []
+    indexes_for_person_refine = []
+
+    # Football or other
+    ball_indexes = [i for i, pred in enumerate(predicted_labels) if pred == BoundingBoxObject.FOOTBALL]
+    person_candidate_indexes = [i for i in range(len(rois)) if i not in ball_indexes]
+
+    # Step 2a : FOOTBALL
+    if ball_indexes:
+        football_rois = [rois[i] for i in ball_indexes]
+        ball_inputs = data_processor(
+            text=["a football ball", "a goal post", "a grass field", "other"],
+            images=football_rois,
+            return_tensors="pt",
+            padding=True
+        ).to("cpu")
+        with no_grad():
+            ball_outputs = clip_model(**ball_inputs)
+            ball_probs = ball_outputs.logits_per_image.softmax(dim=1)
+
+        for j, i in enumerate(ball_indexes):
+            probs=ball_probs[j]
+            if ball_probs[j].argmax().item() == 0:
+                expected_labels[i] = BoundingBoxObject.FOOTBALL
+            else:
+                expected_labels[i] = BoundingBoxObject.NOTFOOT
+
+    # step 2b : PERSON vs GRASS
+    for i in person_candidate_indexes:
+        person_score = step1_probs[i][0].item()
+        grass_score = step1_probs[i][1].item()
+        if person_score > 0.08:
+            rois_for_person_refine.append(rois[i])
+            indexes_for_person_refine.append(i)
+        else:
+            expected_labels[i] = BoundingBoxObject.GRASS
+
+    # Step 3 : PERSON final classification
+    if rois_for_person_refine:
+        person_labels = [
+            BoundingBoxObject.PLAYER.value,
+            BoundingBoxObject.GOALKEEPER.value,
+            BoundingBoxObject.REFEREE.value,
+            BoundingBoxObject.CROWD.value,
+            BoundingBoxObject.BLACK.value
+        ]
+        refine_inputs = data_processor(
+            text=person_labels,
+            images=rois_for_person_refine,
+            return_tensors="pt",
+            padding=True
+        ).to("cpu")
+        with no_grad():
+            refine_outputs = clip_model(**refine_inputs)
+            refine_probs = refine_outputs.logits_per_image.softmax(dim=1)
+            refine_preds = refine_probs.argmax(dim=1)
+
+        for k, idx in enumerate(indexes_for_person_refine):
+            expected_labels[idx] = BoundingBoxObject(person_labels[refine_preds[k]])
+
+    # Scoring
+    scores = []
+    for i in range(len(expected_labels)):
+        if expected_labels[i] is None:
+            continue
+        predicted = predicted_labels[i]
+        expected = expected_labels[i]
+        scores.append(
+            BBoxScore(
+                predicted_label=predicted,
+                expected_label=expected,
+                occurrence=len([
+                    s for s in scores if s.expected_label == expected
+                ])
+            )
+        )
+
+    logger.debug('\n'.join(map(str, scores)))
     points = [score.points for score in scores]
     total_points = sum(points)
-    n_unique_classes_detected = len(set(expecteds))
-    normalised_score = total_points/n_unique_classes_detected
+    n_unique_classes_detected = len(set(expected_labels) - {None})
+    normalised_score = total_points / n_unique_classes_detected if n_unique_classes_detected else 0.0
     scale = multiplication_factor(image_array=image_array, bboxes=bboxes)
-    scaled_score = scale*normalised_score
-    logger.info(f"Frame {frame_id}:\n\t-> {len(bboxes)} Bboxes predicted\n\t-> sum({', '.join(f'{point:.2f}' for point in points)}) = {total_points:.2f}\n\t-> (normalised by {n_unique_classes_detected} classes detected: [{', '.join(expected.value for expected in set(expecteds))}]) = {normalised_score:.2f}\n\t-> (Scaled by a factor of {scale:.2f}) = {scaled_score:.2f}")
+    scaled_score = scale * normalised_score
+
+    points_with_labels = [f"{score.points:.2f} ({score.expected_label.value})" for score in scores]
+    logger.info(
+        f"Frame {frame_id}:\n"
+        f"\t-> {len(bboxes)} Bboxes predicted\n"
+        f"\t-> sum({', '.join(points_with_labels)}) = {total_points:.2f}\n"
+        f"\t-> (normalised by {n_unique_classes_detected} classes detected) = {normalised_score:.2f}\n"
+        f"\t-> (Scaled by factor {scale:.2f}) = {scaled_score:.2f}"
+    )
+
     return scaled_score
+
 
 
 async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_valid:int) -> float:
@@ -254,7 +391,7 @@ async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_vali
     )
 
     if len(frame_ids_to_evaluate)/n_valid<0.7:
-        logger.waning(f"Only having {len(frame_ids_to_evaluate)} which is not enough for the threshold")
+        logger.warning(f"Only having {len(frame_ids_to_evaluate)} which is not enough for the threshold")
         return 0.0
         
     if not any(frame_ids_to_evaluate):
