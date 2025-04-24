@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from transformers import CLIPProcessor, CLIPModel
 from cv2 import VideoCapture
 from torch import no_grad
+import torch
 
+SCALE_FOR_CLIP = 4.0
 FRAMES_PER_VIDEO = 750
 logger = getLogger("Bounding Box Evaluation Pipeline")
 clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to("cpu")
@@ -189,13 +191,13 @@ def multiplication_factor(image_array:ndarray, bboxes:list[dict[str,int|tuple[in
     avg_percentage_area_per_bbox=percentage_image_area_covered/valid_bbox_count
 
     if avg_percentage_area_per_bbox <= 0.015:
-        if percentage_image_area_covered <= 0.10:
+        if percentage_image_area_covered <= 0.15:
             scaling_factor=1
         else:
-            scaling_factor = exp(-3 * (percentage_image_area_covered - 0.1))
+            scaling_factor = exp(-3 * (percentage_image_area_covered - 0.15))
 
     else:
-        scaling_factor = exp(-100 * (avg_percentage_area_per_bbox - 0.015))
+        scaling_factor = exp(-80 * (avg_percentage_area_per_bbox - 0.015))
 
     logger.info(
         f"Avg area per object: {avg_percentage_area_per_bbox*100:.2f}% of image — scaling factor = {scaling_factor:.4f}"
@@ -219,6 +221,26 @@ def batch_classify_rois(regions_of_interest:list[ndarray]) -> list[BoundingBoxOb
         OBJECT_ID_TO_ENUM.get(object_id.item(), BoundingBoxObject.OTHER)
         for object_id in object_ids
     ]
+
+def crop_and_return_scaled_roi(image: ndarray, bbox: tuple[int, int, int, int], scale: float) -> ndarray | None:
+    x1, y1, x2, y2 = map(float, bbox)
+    w, h = x2 - x1, y2 - y1
+    if w <= 0 or h <= 0 or scale < 1.0:
+        return None
+
+    cx, cy = x1 + w / 2, y1 + h / 2
+    half_w, half_h = (w * scale) / 2.0, (h * scale) / 2.0
+
+    nx1, ny1 = cx - half_w, cy - half_h
+    nx2, ny2 = cx + half_w, cy + half_h
+
+    H, W = image.shape[:2]
+    nx1, nx2 = max(0, int(round(nx1))), min(W - 1, int(round(nx2)))
+    ny1, ny2 = max(0, int(round(ny1))), min(H - 1, int(round(ny2)))
+    if nx2 <= nx1 or ny2 <= ny1:
+        return None
+
+    return image[ny1:ny2, nx1:nx2].copy()
 
 def extract_regions_of_interest_from_image(bboxes:list[dict[str,int|tuple[int,int,int,int]]], image_array:ndarray) -> list[ndarray]:
     rois = []
@@ -275,22 +297,61 @@ def evaluate_frame(
     ball_indexes = [i for i, pred in enumerate(predicted_labels) if pred == BoundingBoxObject.FOOTBALL]
     person_candidate_indexes = [i for i in range(len(rois)) if i not in ball_indexes]
 
-    # Step 2a : FOOTBALL
+    # Step 2a : FOOTBALL with new 2-step CLIP check
     if ball_indexes:
-        football_rois = [rois[i] for i in ball_indexes]
-        ball_inputs = data_processor(
-            text=["a football ball", "a goal post", "a grass field", "other"],
+        if len(ball_indexes)>1:
+            logger.info(f"Frame {frame_id} has {len(ball_indexes)} footballs — keeping only the first.")
+            for i in ball_indexes[1:]:
+                predicted_labels[i] = BoundingBoxObject.FOOTBALL  # Still count as predicted
+                expected_labels[i] = BoundingBoxObject.NOTFOOT     # Marked as incorrect
+            ball_indexes = [ball_indexes[0]]
+        
+        football_rois = [
+            crop_and_return_scaled_roi(image_array[:,:,::-1], bboxes[i]['bbox'], scale=SCALE_FOR_CLIP)
+            for i in ball_indexes
+        ]
+        football_rois = [roi for roi in football_rois if roi is not None]
+
+        # Step 1: round object
+        round_inputs = data_processor(
+            text=["a photo of a round object on grass", "a random object"],
             images=football_rois,
             return_tensors="pt",
-            padding=True
+            padding=True,
+            truncation=True
         ).to("cpu")
-        with no_grad():
-            ball_outputs = clip_model(**ball_inputs)
-            ball_probs = ball_outputs.logits_per_image.softmax(dim=1)
 
+        with no_grad():
+            round_outputs = clip_model(**round_inputs)
+            round_probs = round_outputs.logits_per_image.softmax(dim=1)
+
+        # Step 2: semantic football if round enough
         for j, i in enumerate(ball_indexes):
-            probs=ball_probs[j]
-            if ball_probs[j].argmax().item() == 0:
+            round_prob = round_probs[j][0].item()
+
+            if round_prob < 0.5:
+                expected_labels[i] = BoundingBoxObject.NOTFOOT
+                continue
+
+            # Step 2 — semantic football classification
+            step2_inputs = data_processor(
+                text=[
+                "a small soccer ball on the field",
+                "just grass without any ball",
+                "other"
+                ],
+                images=[football_rois[j]],
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to("cpu")
+
+            with no_grad():
+                step2_outputs = clip_model(**step2_inputs)
+                step2_probs = step2_outputs.logits_per_image.softmax(dim=1)[0]
+
+            pred_idx = torch.argmax(step2_probs).item()
+            if pred_idx == 0:  # ball or close-up of ball
                 expected_labels[i] = BoundingBoxObject.FOOTBALL
             else:
                 expected_labels[i] = BoundingBoxObject.NOTFOOT
@@ -349,7 +410,7 @@ def evaluate_frame(
     points = [score.points for score in scores]
     total_points = sum(points)
     n_unique_classes_detected = len(set(expected_labels) - {None})
-    normalised_score = total_points / n_unique_classes_detected if n_unique_classes_detected else 0.0
+    normalised_score = total_points / (n_unique_classes_detected+1) if n_unique_classes_detected else 0.0
     scale = multiplication_factor(image_array=image_array, bboxes=bboxes)
     scaled_score = scale * normalised_score
 
@@ -426,7 +487,7 @@ async def evaluate_bboxes(prediction:dict, path_video:Path, n_frames:int, n_vali
             score = future.result()
             scores.append(score)
         except Exception as e:
-            print(f"Error while getting score from future: {e}")
+            logger.warning(f"Error while getting score from future: {e}")
 
     average_score = sum(scores)/len(scores) if any(scores) else 0.0
     logger.info(f"Average Score: {average_score:.2f} when evaluated on {len(scores)} frames")
