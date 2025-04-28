@@ -190,7 +190,8 @@ class GSRValidator:
         response: GSRResponse,
         challenge: GSRChallenge,
         video_path: Path,
-        frames_to_validate: List[int] = None
+        frames_to_validate: List[int] = None,
+        selected_frames_id_bbox: List[int] = None
     ) -> ValidationResult:
 
         filtered_frames = {
@@ -205,8 +206,6 @@ class GSRValidator:
         total_bbox_score = 0.0
         frame_scores = {}
         frame_details = []
-
-        selected_frames_id_bbox = random.sample(frames_to_validate, min(100, len(frames_to_validate)))
         
         selected_frames_bbox = {str(i): v for i, v in response.frames.items() if int(i) in selected_frames_id_bbox}
         
