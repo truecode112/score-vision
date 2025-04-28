@@ -25,13 +25,16 @@ async def calculate_score(
         
         # Collect all processing times across all responses
         task_processing_times = []
+        valid_processing_times = []
         for result in evaluation_results:
             if 'processing_time' in result:
-                task_processing_times.append(result['processing_time'])
+                bbox_score = result['validation_result'].score
+                if bbox_score > 0.2:
+                    valid_processing_times.append(result['processing_time'])
         
         # Calculate relative processing times
-        min_time = min(task_processing_times) if task_processing_times else 0
-        max_time = max(task_processing_times) if task_processing_times else 0
+        min_time = min(valid_processing_times) if valid_processing_times else 0
+        max_time = max(valid_processing_times) if valid_processing_times else 0
         
         logger.info(f"Processing times: Min time: {min_time}, Max time: {max_time}")
         
@@ -53,7 +56,10 @@ async def calculate_score(
             quality_score= (bbox_score*0.75) + (keypoints_final_score*0.25)
             
             # Calculate speed score
-            speed_score = calculate_speed_score(processing_time, min_time, max_time)
+            if bbox_score <= 0.2:
+                speed_score = 0.0
+            else:
+                speed_score = calculate_speed_score(processing_time, min_time, max_time)
             
             # Get availability score
             availability_score = db_manager.get_availability_score(int(node_id))
