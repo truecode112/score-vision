@@ -53,7 +53,7 @@ async def calculate_score(
                 keypoints_final_score = feedback["keypoints_final_score"]
             
             logger.info(f"bbox_score: {bbox_score}, keypoints_final_score: {keypoints_final_score}")
-            quality_score= (bbox_score*0.75) + (keypoints_final_score*0.25)
+            quality_score= (bbox_score*0.90) + (keypoints_final_score*0.10)
             
             # Calculate speed score
             if bbox_score <= 0.2:
