@@ -190,11 +190,21 @@ class GSRValidator:
         response: GSRResponse,
         challenge: GSRChallenge,
         video_path: Path,
-        frames_to_validate: List[int] = None
+        frames_to_validate: List[int] = None,
+        selected_frames_id_bbox: List[int] = None
     ) -> ValidationResult:
 
+        temp_frames=response.frames
+
+        if isinstance(temp_frames, list):
+            logger.warning("Legacy formatting detected. Updating...")
+            temp_frames = {
+                frame.get('frame_number',str(i)):frame
+                for i, frame in enumerate(temp_frames)
+                }
+
         filtered_frames = {
-            str(k): v for k, v in response.frames.items() if int(k) in frames_to_validate
+            str(k): v for k, v in temp_frames.items() if int(k) in frames_to_validate
         }
         # Analyse keypoints (globale)
         scoring_result = await self.validate_keypoints(filtered_frames, 1280, 720)
@@ -205,10 +215,8 @@ class GSRValidator:
         total_bbox_score = 0.0
         frame_scores = {}
         frame_details = []
-
-        selected_frames_id_bbox = random.sample(frames_to_validate, min(100, len(frames_to_validate)))
         
-        selected_frames_bbox = {str(i): v for i, v in response.frames.items() if int(i) in selected_frames_id_bbox}
+        selected_frames_bbox = {str(i): v for i, v in temp_frames.items() if int(i) in selected_frames_id_bbox}
         
         logger.info(f'Starting to evaluate {len(selected_frames_id_bbox)} frames')
         avg_bbox_score = await evaluate_bboxes(

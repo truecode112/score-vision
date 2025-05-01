@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Set
 from pathlib import Path
 import time
+import random
 
 import httpx
 from fiber.logging_utils import get_logger
@@ -167,6 +168,8 @@ async def evaluate_pending_responses(
             return
         logger.info(f'Accepting challenge with {len(frames)} valid frames for evaluation')
 
+        selected_frames_id_bbox = random.sample(frames, min(100, len(frames)))
+        
         # Create and queue tasks for each response
         evaluation_results = []
 
@@ -182,7 +185,8 @@ async def evaluate_pending_responses(
                         video_url=challenge["video_url"]
                     ),
                     video_path=video_path,
-                    frames_to_validate=frames
+                    frames_to_validate=frames,
+                    selected_frames_id_bbox=selected_frames_id_bbox
                 )
                 if result:
                     started_at=db_manager.get_challenge_assignment_sent_at(challenge['challenge_id'], response.miner_hotkey)

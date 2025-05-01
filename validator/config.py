@@ -40,10 +40,10 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Additional settings needed for operation
 CHALLENGE_INTERVAL = timedelta(minutes=60)
-CHALLENGE_TIMEOUT = timedelta(minutes=100)
+CHALLENGE_TIMEOUT = timedelta(minutes=4)
 
 WEIGHTS_INTERVAL = timedelta(minutes=30)
-VALIDATION_DELAY = timedelta(minutes=120)
+VALIDATION_DELAY = timedelta(minutes=5)
 
 DB_PATH = Path("validator.db")
 # Log initial configuration
