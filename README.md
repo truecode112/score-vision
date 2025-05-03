@@ -33,7 +33,7 @@ Score Vision operates through a carefully orchestrated interaction between three
 
 The video input stage begins with miners receiving video streams. Each frame undergoes processing for object detection and tracking, resulting in standardised outputs generated in real-time.
 
-The validation stage follows, where validators efficiently verify miners' outputs through selective frame analysis. VLM-based accuracy assessment ensures quality whilst maintaining a real-time feedback loop for network integrity.
+The validation stage follows, where validators verify miners’ outputs through filtered frame selection and hybrid scoring. Keypoints are assessed globally for stability and plausibility, while object detections undergo semantic verification, ensuring real-time, quality-aware feedback for network integrity.
 
 Network management is overseen by Subnet Owner who maintain system health. They oversee the dynamic adjustment of incentives based on performance and optimise system parameters for maximum efficiency.
 
@@ -41,11 +41,14 @@ Network management is overseen by Subnet Owner who maintain system health. They 
 
 ### Core Innovation: Lightweight Validation
 
-Our framework introduces a novel approach to computer vision validation that dramatically reduces computational overhead whilst maintaining high accuracy. This is achieved through our two-phase validation architecture.
+Our validation system combines precision and efficiency through a two-step process:
+	1.	Frame Filtering & Keypoint Validation
+Frames are filtered using pitch detection. A global scoring system then evaluates keypoint accuracy based on stability, plausibility, and reprojection error.
+	2.	Semantic BBox Assessment
+Selected frames are validated via CLIP-based object checks, verifying class accuracy for players, ball, referees, and goalkeepers. The result is a confidence-weighted quality score.
 
-The first phase, Object Count Verification, provides fast numerical analysis of scene composition. It performs real-time validation of object presence and counts, structured output verification against expected game states, and serves as an initial quality gate with minimal computational cost.
+Scores are combined and normalized (0–1) to guide miner rewards and maintain network integrity
 
-The second phase, Intelligent Quality Assessment, employs advanced VLM-based validation of object relationships. It verifies spatial accuracy of bounding boxes and performs context-aware evaluation of detected game states, producing a normalised quality score between 0 and 1.
 
 ### Technical Challenges & Solutions
 
