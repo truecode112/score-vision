@@ -5,6 +5,7 @@ import json
 from fiber.logging_utils import get_logger
 from validator.challenge.challenge_types import GSRResponse, ValidationResult
 from validator.db.operations import DatabaseManager
+from validator.config import MAX_PROCESSING_TIME
 import httpx
 import math
 
@@ -29,7 +30,7 @@ async def calculate_score(
         for result in evaluation_results:
             if 'processing_time' in result:
                 bbox_score = result['validation_result'].score
-                if bbox_score > 0.2:
+                if bbox_score > 0.2 and result['processing_time'] < MAX_PROCESSING_TIME:
                     valid_processing_times.append(result['processing_time'])
         
         # Calculate relative processing times
@@ -56,7 +57,7 @@ async def calculate_score(
             quality_score= (bbox_score*0.90) + (keypoints_final_score*0.10)
             
             # Calculate speed score
-            if bbox_score <= 0.2:
+            if bbox_score <= 0.2 or processing_time >= MAX_PROCESSING_TIME:
                 speed_score = 0.0
             else:
                 speed_score = calculate_speed_score(processing_time, min_time, max_time)
@@ -128,7 +129,7 @@ def calculate_speed_score(processing_time: float, min_time: float, max_time: flo
         return 1.0  # If all times are the same, give full score
         
     # Normalize time to 0-1 range
-    normalized_time = (processing_time - min_time) / (30.0 - min_time)
+    normalized_time = (processing_time - min_time) / (MAX_PROCESSING_TIME - min_time)
     
     # Apply exponential scaling to more aggressively reward faster times
     # Using exponential decay with base e
