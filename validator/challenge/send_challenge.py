@@ -114,17 +114,22 @@ async def send_challenge(
             logger.debug("Sending challenge request...")
             
             # Send the challenge using fiber validator client with long timeout
-            response = await validator.make_non_streamed_post(
-                httpx_client=client,
-                server_address=server_address,
-                validator_ss58_address=keypair.ss58_address,
-                miner_ss58_address=hotkey,
-                keypair=keypair,
-                endpoint=endpoint,
-                payload=payload,
-                timeout=timeout
-            )
-            
+            try:
+                response = await validator.make_non_streamed_post(
+                    httpx_client=client,
+                    server_address=server_address,
+                    validator_ss58_address=keypair.ss58_address,
+                    miner_ss58_address=hotkey,
+                    keypair=keypair,
+                    endpoint=endpoint,
+                    payload=payload,
+                    timeout=timeout
+                )
+            except httpx.TimeoutException as e:
+                response =  httpx.Response(
+                    status_code=200,
+                    json={"frames": []},
+                )
             received_time = datetime.now(timezone.utc)
             processing_time = (received_time - sent_time).total_seconds()
 
