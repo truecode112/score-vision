@@ -30,7 +30,7 @@ async def calculate_score(
         for result in evaluation_results:
             if 'processing_time' in result:
                 bbox_score = result['validation_result'].score
-                if bbox_score > 0.2 and result['processing_time'] < MAX_PROCESSING_TIME:
+                if bbox_score > 0.2 :
                     valid_processing_times.append(result['processing_time'])
         
         # Calculate relative processing times
@@ -129,7 +129,7 @@ def calculate_speed_score(processing_time: float, min_time: float, max_time: flo
         return 1.0  # If all times are the same, give full score
         
     # Normalize time to 0-1 range
-    normalized_time = (processing_time - min_time) / (MAX_PROCESSING_TIME - min_time)
+    normalized_time = (processing_time - min_time) / (min(max_time,MAX_PROCESSING_TIME) - min_time)
     
     # Apply exponential scaling to more aggressively reward faster times
     # Using exponential decay with base e
